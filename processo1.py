@@ -1129,6 +1129,32 @@ def inserir_coluna_novo_pedido(
         elif isinstance(tmpl.value, (int, float)) and tmpl.value is not None:
             nova.value = 0
 
+    # ── 6b. Corrigir fórmulas das colunas USOU deslocadas por esta inserção ─────
+    # A inserção acima empurrou +1 todas as colunas USOU à direita de col_alvo.
+    # As fórmulas que foram geradas em inserir_coluna ficaram com referências
+    # uma coluna atrás do correto — aqui as reescrevemos na posição definitiva.
+    usou_cols_apos = _encontrar_todas_col_usou(ws)
+    for usou_col in usou_cols_apos:
+        if usou_col <= col_alvo:
+            continue  # USOU à esquerda do ponto de inserção: não foi deslocado
+        if usou_col < 3:
+            continue
+        letra_prev2 = get_column_letter(usou_col - 2)
+        letra_prev1 = get_column_letter(usou_col - 1)
+        letra_self  = get_column_letter(usou_col)
+        for row in range(1, ultima_linha + 1):
+            cell = ws.cell(row=row, column=usou_col)
+            if (cell.value is not None
+                    and isinstance(cell.value, str)
+                    and cell.value.startswith("=")):
+                cell.value = (
+                    f"={letra_prev2}{row}"
+                    f"+IF(NOT(ISBLANK(OFFSET({letra_self}{row},0,6))),"
+                    f"N(OFFSET({letra_self}{row},0,6)),"
+                    f"N(OFFSET({letra_self}{row},0,7)))"
+                    f"-{letra_prev1}{row}"
+                )
+
     # ── 7. Reconstruir larguras com deslocamento de +1 para cols >= col_alvo ──
     ws.column_dimensions.clear()
     for orig_col, width in all_widths.items():
