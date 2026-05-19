@@ -1,0 +1,34 @@
+# Excel files
+*.xlsm
+*.xlsx
+*.xls
+
+# Pastas com arquivos Excel
+00_ENTRADA/
+00_FONTES/
+01_BACKUP/
+01_PROCESSADOS/
+02_QUARENTENA/
+04_PLANILHAS_PAI/
+
+# Logs
+02_LOGS/
+03_LOGS/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
