@@ -106,15 +106,19 @@ def eh_elegivel(nome_aba: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cel_tem_data(cell) -> bool:
-    """Retorna True se a célula contém uma data — via tipo Python ou número com formato de data."""
+    """Retorna True se a célula contém uma data — via tipo Python, número ou fórmula com formato de data."""
     val = cell.value
     if val is None:
         return False
     if isinstance(val, (dt.date, dt.datetime)):
         return True
+    fmt = (cell.number_format or "").lower()
+    _DATE_PATTERNS = ("d/m", "dd/mm", "d-m", "m/d", "mm/dd", "dd-mm")
     if isinstance(val, (int, float)) and val > 0:
-        fmt = (cell.number_format or "").lower()
-        if any(p in fmt for p in ("d/m", "dd/mm", "d-m", "m/d", "mm/dd", "dd-mm")):
+        if any(p in fmt for p in _DATE_PATTERNS):
+            return True
+    if isinstance(val, str) and val.startswith("="):
+        if any(p in fmt for p in _DATE_PATTERNS):
             return True
     return False
 
@@ -1044,9 +1048,9 @@ def inserir_coluna_novo_pedido(
     ws, dry_run: bool, logger: logging.Logger, nome_aba: str
 ) -> Optional[int]:
     """
-    Localiza a seção 'Novo Pedido', escreve data de hoje + zeros em col_ancora+1
-    SEM usar insert_cols — as colunas de data existentes ficam nas suas posições.
-    Apenas a visibilidade muda: 3 colunas mais recentes ficam visíveis.
+    Localiza a seção 'Novo Pedido', insere uma nova coluna em col_ancora+1 e
+    escreve data de hoje + zeros, deslocando as datas anteriores para a direita.
+    Mantém 3 colunas visíveis (nova + 2 anteriores), oculta o restante.
     """
     # ── 1. Encontrar coluna âncora com texto 'NOVO PEDIDO' ───────────────────
     col_ancora = None
@@ -1062,12 +1066,9 @@ def inserir_coluna_novo_pedido(
     if col_ancora is None:
         return None
 
-    # ── 2. Alvo: col_ancora + 1 (nunca usa insert_cols) ─────────────────────
-    col_alvo = col_ancora + 1
-
-    # ── 3. Bloco de datas a partir de col_ancora + 2 (após o alvo) ───────────
+    # ── 2. Bloco de datas existentes a partir de col_ancora + 1 (antes da inserção)
     primeira_data = None
-    for col in range(col_ancora + 2, min(col_ancora + 32, ws.max_column + 1)):
+    for col in range(col_ancora + 1, min(col_ancora + 32, ws.max_column + 1)):
         if any(_cel_tem_data(ws.cell(row=row, column=col)) for row in range(1, 16)):
             primeira_data = col
             break
@@ -1075,25 +1076,45 @@ def inserir_coluna_novo_pedido(
     if primeira_data is None:
         return None
 
-    date_cols: list = []
+    date_cols_antes: list = []
     for col in range(primeira_data, ws.max_column + 1):
         if any(_cel_tem_data(ws.cell(row=row, column=col)) for row in range(1, 16)):
-            date_cols.append(col)
+            date_cols_antes.append(col)
         else:
             break
 
-    template_col = date_cols[0]
+    template_col_antes = date_cols_antes[0]
+
+    # Inserir imediatamente antes da primeira data existente (sem pular colunas em branco)
+    col_alvo = primeira_data
 
     if dry_run:
         logger.debug(
-            "    [DRY-RUN] Aba '%s': Novo Pedido — alvo col %d, template col %d (%d datas)",
-            nome_aba, col_alvo, template_col, len(date_cols),
+            "    [DRY-RUN] Aba '%s': Novo Pedido — inserir em col %d, template col %d (%d datas)",
+            nome_aba, col_alvo, template_col_antes, len(date_cols_antes),
         )
         return col_alvo
 
     ultima_linha = ws.max_row
 
-    # ── 4. Escrever em col_alvo (sem deslocar nada) ───────────────────────────
+    # ── 4. Snapshot de larguras antes da inserção ─────────────────────────────
+    all_widths: dict = {}
+    all_hidden: dict = {}
+    for letra, dim in ws.column_dimensions.items():
+        col_num = column_index_from_string(letra)
+        if dim.width and dim.width > 0:
+            all_widths[col_num] = dim.width
+        if dim.hidden:
+            all_hidden[col_num] = True
+
+    # ── 5. Inserir nova coluna em col_alvo ────────────────────────────────────
+    ws.insert_cols(col_alvo)
+
+    # Após a inserção todos os índices >= col_alvo deslocaram +1
+    template_col = template_col_antes + 1
+    date_cols = [c + 1 for c in date_cols_antes]
+
+    # ── 6. Copiar formato e escrever valores na nova coluna ───────────────────
     copiar_formato(ws, template_col, col_alvo)
 
     for row in range(1, ultima_linha + 1):
@@ -1108,13 +1129,25 @@ def inserir_coluna_novo_pedido(
         elif isinstance(tmpl.value, (int, float)) and tmpl.value is not None:
             nova.value = 0
 
-    # ── 5. Visibilidade: col_alvo + 2 datas existentes = 3 visíveis ──────────
+    # ── 7. Reconstruir larguras com deslocamento de +1 para cols >= col_alvo ──
+    ws.column_dimensions.clear()
+    for orig_col, width in all_widths.items():
+        nova_letra = get_column_letter(orig_col + 1 if orig_col >= col_alvo else orig_col)
+        ws.column_dimensions[nova_letra].width = width
+    for orig_col in all_hidden:
+        nova_letra = get_column_letter(orig_col + 1 if orig_col >= col_alvo else orig_col)
+        ws.column_dimensions[nova_letra].hidden = True
+    # Nova coluna herda largura do template
+    if template_col_antes in all_widths:
+        ws.column_dimensions[get_column_letter(col_alvo)].width = all_widths[template_col_antes]
+
+    # ── 8. Visibilidade: col_alvo + 2 datas anteriores = 3 visíveis ──────────
     ordered_cols = [col_alvo] + date_cols
     for i, col in enumerate(ordered_cols):
         ws.column_dimensions[get_column_letter(col)].hidden = (i >= 3)
 
     logger.debug(
-        "    Aba '%s': Novo Pedido — escrita em col %d, %d semanas (%d ocultas)",
+        "    Aba '%s': Novo Pedido — inserida em col %d, %d semanas (%d ocultas)",
         nome_aba, col_alvo, len(ordered_cols), max(0, len(ordered_cols) - 3),
     )
     return col_alvo
