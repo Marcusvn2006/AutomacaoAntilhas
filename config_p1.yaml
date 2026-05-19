@@ -1,0 +1,19 @@
+# Processo 1 — Configuração de caminhos
+# Todos os caminhos são relativos ao diretório do script (antilhas/)
+
+dirs:
+  backup: 01_BACKUP
+  logs:   02_LOGS
+
+planilhas_pai:
+  praia: "04_PLANILHAS_PAI/PRAIA - Contagem Antilhas - 2026.xlsm"
+  jau:   "04_PLANILHAS_PAI/JAÚ - Contagem Antilhas - 2026.xlsm"
+  bauru: "04_PLANILHAS_PAI/BAURU - Contagem Antilhas - 2026.xlsm"
+
+auxiliar:
+  path: 00_ENTRADA/AUXILIAR.xlsx
+  aba:  AUXILIAR
+
+auxiliar_vds:
+  path: 00_ENTRADA/AUXILIAR_VDS.xlsx
+  aba:  "AUXILIAR VD'S"

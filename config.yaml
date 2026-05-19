@@ -1,0 +1,308 @@
+# =============================================================================
+# config.yaml — Configuração central do pipeline de Antilhas
+# Toda configuração fica aqui. Nunca hardcode nos scripts.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Caminhos base (relativos à raiz do projeto antilhas/)
+# ---------------------------------------------------------------------------
+caminhos:
+  fontes_lojas:    "00_FONTES/lojas"
+  fontes_sistema:  "00_FONTES/sistema"
+  processados:     "01_PROCESSADOS"
+  quarentena:      "02_QUARENTENA"
+  logs:            "03_LOGS"
+  planilhas_pai:   "04_PLANILHAS_PAI"
+
+# ---------------------------------------------------------------------------
+# Planilhas Pai por região
+# ---------------------------------------------------------------------------
+planilhas_pai:
+  JAU:
+    arquivo: "JAU_Contagem_Antilhas_2026.xlsm"
+  BAURU:
+    arquivo: "BAURU_Contagem_Antilhas_2026.xlsm"
+  PRAIA:
+    arquivo: "PRAIA_Contagem_Antilhas_2026.xlsm"
+
+# ---------------------------------------------------------------------------
+# Lojas cadastradas
+# Campos: codigo, sigla, regiao, aba_planilha_pai, nome
+# Para Bauru e Praia: campos em branco aguardando confirmação dos códigos.
+# ---------------------------------------------------------------------------
+lojas:
+
+  # ── JAU ────────────────────────────────────────────────────────────────
+  - codigo: "3822"
+    sigla: "JC"
+    regiao: "JAU"
+    aba_planilha_pai: "JC 3822"
+    nome: "Boticário Jaú Centro"
+
+  - codigo: "14446"
+    sigla: "JD"
+    regiao: "JAU"
+    aba_planilha_pai: "JD 14446"
+    nome: "Boticário Jaú D"
+
+  - codigo: "12066"
+    sigla: "BB"
+    regiao: "JAU"
+    aba_planilha_pai: "BB 12066"
+    nome: "Boticário Bariri"
+
+  - codigo: "23048"
+    sigla: "SM"
+    regiao: "JAU"
+    aba_planilha_pai: "SM 23048"
+    nome: "Boticário São Manuel"
+
+  - codigo: "11722"
+    sigla: "JSH"
+    regiao: "JAU"
+    aba_planilha_pai: "JSH 11722"
+    nome: "Boticário Jaú Shopping"
+
+  - codigo: "14553"
+    sigla: "CONF"
+    regiao: "JAU"
+    aba_planilha_pai: "CONF 14553"
+    nome: "Boticário Confluência"
+
+  - codigo: "7529"
+    sigla: "DC"
+    regiao: "JAU"
+    aba_planilha_pai: "DC 7529"
+    nome: "Boticário Dois Córregos"
+
+  - codigo: "6942"
+    sigla: "IT"
+    regiao: "JAU"
+    aba_planilha_pai: "IT 6942"
+    nome: "Boticário Itatinga"
+
+  - codigo: "6954"
+    sigla: "BR"
+    regiao: "JAU"
+    aba_planilha_pai: "BR 6954"
+    nome: "Boticário Brotas"
+
+  # ── BAURU — códigos aguardando confirmação ──────────────────────────────
+  - codigo: ""
+    sigla: "BSH"
+    regiao: "BAURU"
+    aba_planilha_pai: "BSH"
+    nome: "Boticário Bauru Shopping"
+
+  - codigo: ""
+    sigla: "GV"
+    regiao: "BAURU"
+    aba_planilha_pai: "GV"
+    nome: "Boticário Garden Village"
+
+  - codigo: ""
+    sigla: "MD"
+    regiao: "BAURU"
+    aba_planilha_pai: "MD"
+    nome: "Boticário MD"
+
+  - codigo: ""
+    sigla: "Q2"
+    regiao: "BAURU"
+    aba_planilha_pai: "Q2"
+    nome: "Boticário Q2"
+
+  - codigo: ""
+    sigla: "Q7"
+    regiao: "BAURU"
+    aba_planilha_pai: "Q7"
+    nome: "Boticário Q7"
+
+  - codigo: ""
+    sigla: "QDB"
+    regiao: "BAURU"
+    aba_planilha_pai: "QDB"
+    nome: "Boticário QDB"
+
+  - codigo: ""
+    sigla: "SHN"
+    regiao: "BAURU"
+    aba_planilha_pai: "SHN"
+    nome: "Boticário SHN"
+
+  - codigo: ""
+    sigla: "TT"
+    regiao: "BAURU"
+    aba_planilha_pai: "TT"
+    nome: "Boticário TT"
+
+  - codigo: ""
+    sigla: "TT NOVO"
+    regiao: "BAURU"
+    aba_planilha_pai: "TT NOVO"
+    nome: "Boticário TT Novo"
+
+  - codigo: ""
+    sigla: "VDB"
+    regiao: "BAURU"
+    aba_planilha_pai: "VDB"
+    nome: "Boticário VDB"
+
+  - codigo: ""
+    sigla: "WM"
+    regiao: "BAURU"
+    aba_planilha_pai: "WM"
+    nome: "Boticário WM"
+
+  # ── PRAIA GRANDE — códigos aguardando confirmação ───────────────────────
+  - codigo: ""
+    sigla: "BOQ"
+    regiao: "PRAIA"
+    aba_planilha_pai: "BOQ"
+    nome: "Boticário Boqueirao"
+
+  - codigo: ""
+    sigla: "MG"
+    regiao: "PRAIA"
+    aba_planilha_pai: "MG"
+    nome: "Boticário MG"
+
+  - codigo: ""
+    sigla: "PBE"
+    regiao: "PRAIA"
+    aba_planilha_pai: "PBE"
+    nome: "Boticário PBE"
+
+  - codigo: ""
+    sigla: "PL"
+    regiao: "PRAIA"
+    aba_planilha_pai: "PL"
+    nome: "Boticário PL"
+
+  - codigo: ""
+    sigla: "TUPI"
+    regiao: "PRAIA"
+    aba_planilha_pai: "TUPI"
+    nome: "Boticário Tupi"
+
+  - codigo: ""
+    sigla: "VDP"
+    regiao: "PRAIA"
+    aba_planilha_pai: "VDP"
+    nome: "Boticário VDP"
+
+# ---------------------------------------------------------------------------
+# Mapeamento de produtos: arquivo da loja → Planilha Pai
+#
+# Cada entrada:
+#   nome_loja:       nome exato como aparece no arquivo da loja (uppercase)
+#   nome_pai:        nome exato como aparece na Planilha Pai (usado com .strip().upper())
+#   bloco:           "esquerdo" (cols A-F) ou "direito" (cols H-M)
+#   valor:           "total" (col F ou M) | "fechadas" (col D ou K) | "abertas" (col E ou L)
+# ---------------------------------------------------------------------------
+produtos:
+
+  # ── Bloco esquerdo: SACOLA BOTICÁRIO 2025 ───────────────────────────────
+  - nome_loja:  "SACOLA PP"
+    nome_pai:   "SACOLA PP VERDE"
+    bloco:      "esquerdo"
+    valor:      "total"
+
+  - nome_loja:  "SACOLA P"
+    nome_pai:   "SACOLA P VERDE"
+    bloco:      "esquerdo"
+    valor:      "total"
+
+  - nome_loja:  "SACOLA M"
+    nome_pai:   "SACOLA M VERDE"
+    bloco:      "esquerdo"
+    valor:      "total"
+
+  - nome_loja:  "SACOLA G"
+    nome_pai:   "SACOLA G VERDE"
+    bloco:      "esquerdo"
+    valor:      "total"
+
+  # ── Bloco esquerdo: DIVERSOS BOTICÁRIO 2025 ─────────────────────────────
+  # Diversos não tem coluna Total → usar Fechadas (col D)
+  - nome_loja:  "PAPEL DE SEDA"
+    nome_pai:   "PAPEL DE SEDA 2025"
+    bloco:      "esquerdo"
+    valor:      "fechadas"
+
+  - nome_loja:  "ETIQUETAS"
+    nome_pai:   "ADESIVOS 2025"
+    bloco:      "esquerdo"
+    valor:      "fechadas"
+
+  - nome_loja:  "TAG"
+    nome_pai:   "TAGS"
+    bloco:      "esquerdo"
+    valor:      "fechadas"
+
+  - nome_loja:  "LÂMINA OLFATIVA"
+    nome_pai:   "LÂMINA OLFATIVA"
+    bloco:      "esquerdo"
+    valor:      "fechadas"
+
+  # ── Bloco direito: CAIXAS ───────────────────────────────────────────────
+  - nome_loja:  "CAIXAS DIVERTIDAMENTE"
+    nome_pai:   "CAIXA M DIVERT./24"
+    bloco:      "direito"
+    valor:      "total"
+
+  - nome_loja:  "CAIXAS G VERDE"
+    nome_pai:   "CAIXA G VERDE"
+    bloco:      "direito"
+    valor:      "total"
+
+  # ── Bloco direito: BOTI MÃES 2026 ───────────────────────────────────────
+  - nome_loja:  "SACOLA P MÃES"
+    nome_pai:   "SACOLA P MÃES"
+    bloco:      "direito"
+    valor:      "total"
+
+  - nome_loja:  "SACOLA M MÃES"
+    nome_pai:   "SACOLA M MÃES"
+    bloco:      "direito"
+    valor:      "total"
+
+  - nome_loja:  "SACOLA G MÃES"
+    nome_pai:   "SACOLA G MÃES"
+    bloco:      "direito"
+    valor:      "total"
+
+  # ── Bloco direito: BOTI MÃES 2026 — Papel/Etiqueta ──────────────────────
+  - nome_loja:  "PAPEL DE SEDA MÃES"
+    nome_pai:   "PAPEL DE SEDA MÃES"
+    bloco:      "direito"
+    valor:      "fechadas"
+
+  - nome_loja:  "ETIQUETA ADESIVA"
+    nome_pai:   "ETIQUETA ADESIVA MÃES"
+    bloco:      "direito"
+    valor:      "fechadas"
+
+# ---------------------------------------------------------------------------
+# Mapeamento de linhas do arquivo da loja (base 1, como no Excel)
+# Usado pelo processador para saber em qual linha ler cada produto.
+# ---------------------------------------------------------------------------
+linhas_arquivo:
+  bloco_esquerdo:
+    SACOLA PP:          5
+    SACOLA P:           6
+    SACOLA M:           7
+    SACOLA G:           8
+    PAPEL DE SEDA:      11
+    ETIQUETAS:          12
+    TAG:                13
+    LÂMINA OLFATIVA:    14
+
+  bloco_direito:
+    CAIXAS DIVERTIDAMENTE: 5
+    CAIXAS G VERDE:        6
+    SACOLA P MÃES:         11
+    SACOLA M MÃES:         12
+    SACOLA G MÃES:         13
+    PAPEL DE SEDA MÃES:    16
+    ETIQUETA ADESIVA:      17
