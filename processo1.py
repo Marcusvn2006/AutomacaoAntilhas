@@ -226,7 +226,7 @@ def _encontrar_todas_col_usou(ws) -> list:
     return resultado
 
 
-def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> Optional[int]:
+def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> Optional[Dict[int, int]]:
     """
     Localiza TODAS as colunas USOU e insere 1 coluna à esquerda de cada uma,
     processando da direita para a esquerda (igual ao VBA) para evitar deslocamentos.
@@ -234,16 +234,27 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
       - Escreve data de hoje em TODAS as linhas com data na coluna anterior (Fix 2)
       - Reescreve a fórmula da coluna USOU com referências corretas (Fix 1)
       - Restaura todas as larguras de coluna a partir de snapshot tirado antes (Fix 3)
-    Retorna o índice (1-based) da coluna nova mais à esquerda, ou None se USOU não encontrado.
+
+    Retorna um dicionário {índice_usou: posição_da_nova_coluna} (1-based, em ordem
+    da esquerda para a direita) ou None se nenhum USOU for encontrado.
+        Exemplo: {1: 28, 2: 60}  → USOU 1 nova col em 28, USOU 2 nova col em 60.
     """
     cols_usou = _encontrar_todas_col_usou(ws)
     if not cols_usou:
         logger.warning("     Aba '%s': coluna USOU não encontrada — pulada", nome_aba)
         return None
 
+    sorted_usou_orig = sorted(cols_usou)
+    # Após inserir colunas da direita para a esquerda, a nova coluna do i-ésimo
+    # USOU (1-based, esquerda→direita) fica em (orig + (i - 1)).
+    cols_novas_por_usou: Dict[int, int] = {
+        i: orig + (i - 1) for i, orig in enumerate(sorted_usou_orig, start=1)
+    }
+
     if dry_run:
-        logger.debug("    [DRY-RUN] Aba '%s': %d USOU(s) em %s", nome_aba, len(cols_usou), cols_usou)
-        return min(cols_usou)
+        logger.debug("    [DRY-RUN] Aba '%s': %d USOU(s) em %s → novas cols %s",
+                     nome_aba, len(cols_usou), cols_usou, cols_novas_por_usou)
+        return cols_novas_por_usou
 
     ultima_linha = ws.max_row
     sorted_usou = sorted(cols_usou)  # ordem crescente (para cálculos de deslocamento)
@@ -364,10 +375,9 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
             else:
                 ws.column_dimensions[letra].hidden = True   # semanas antigas ocultas
 
-    col_nova_retorno = min(cols_usou)
-    logger.debug("    Aba '%s': %d col(s) inserida(s), posição de escrita: %d",
-                 nome_aba, len(cols_usou), col_nova_retorno)
-    return col_nova_retorno
+    logger.debug("    Aba '%s': %d col(s) inserida(s), posições por USOU: %s",
+                 nome_aba, len(cols_usou), cols_novas_por_usou)
+    return cols_novas_por_usou
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -378,7 +388,7 @@ def preencher_praia(
     wb,
     leitor_aux: "LeitorAuxiliar",
     leitor_vds: "LeitorAuxiliar",
-    col_novas: Dict[str, int],
+    col_novas: Dict[str, Dict[int, int]],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
@@ -398,7 +408,10 @@ def preencher_praia(
     def vds(cod_prod: str, nome_aba: str):
         return leitor_vds.get(cod_prod, nome_aba)
 
-    def esc(nome_aba: str, linha: int, valor: float) -> None:
+    def esc(nome_aba: str, linha: int, valor: float, usou: int = 1) -> None:
+        """Escreve `valor` em (linha, coluna USOU[usou]) da aba.
+        usou=1 (default) → primeiro USOU (esquerda); usou=2 → segundo USOU; etc.
+        """
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
@@ -407,8 +420,12 @@ def preencher_praia(
                     logger.warning("     '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
+        cols_usou = col_novas[nome_aba]
+        if usou not in cols_usou:
+            # Loja não tem esse USOU — silenciosamente ignora (não é erro)
+            return
         if not dry_run:
-            wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
+            wb[nome_aba].cell(row=linha, column=cols_usou[usou]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
     # ── PL 12973 ──────────────────────────────────────────────────────────────
@@ -657,7 +674,7 @@ def preencher_jau(
     wb,
     leitor_aux: "LeitorAuxiliar",
     leitor_vds: "LeitorAuxiliar",
-    col_novas: Dict[str, int],
+    col_novas: Dict[str, Dict[int, int]],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
@@ -677,7 +694,10 @@ def preencher_jau(
     def vds(cod_prod: str, nome_aba: str):
         return leitor_vds.get(cod_prod, nome_aba)
 
-    def esc(nome_aba: str, linha: int, valor: float) -> None:
+    def esc(nome_aba: str, linha: int, valor: float, usou: int = 1) -> None:
+        """Escreve `valor` em (linha, coluna USOU[usou]) da aba.
+        usou=1 (default) → primeiro USOU (esquerda); usou=2 → segundo USOU; etc.
+        """
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
@@ -686,8 +706,12 @@ def preencher_jau(
                     logger.warning("     '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
+        cols_usou = col_novas[nome_aba]
+        if usou not in cols_usou:
+            # Loja não tem esse USOU — silenciosamente ignora (não é erro)
+            return
         if not dry_run:
-            wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
+            wb[nome_aba].cell(row=linha, column=cols_usou[usou]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
     # ── JC 3822 ───────────────────────────────────────────────────────────────
@@ -945,7 +969,7 @@ def preencher_bauru(
     wb,
     leitor_aux: "LeitorAuxiliar",
     leitor_vds: "LeitorAuxiliar",
-    col_novas: Dict[str, int],
+    col_novas: Dict[str, Dict[int, int]],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
@@ -965,7 +989,10 @@ def preencher_bauru(
     def vds(cod_prod: str, nome_aba: str):
         return leitor_vds.get(cod_prod, nome_aba)
 
-    def esc(nome_aba: str, linha: int, valor: float) -> None:
+    def esc(nome_aba: str, linha: int, valor: float, usou: int = 1) -> None:
+        """Escreve `valor` em (linha, coluna USOU[usou]) da aba.
+        usou=1 (default) → primeiro USOU (esquerda); usou=2 → segundo USOU; etc.
+        """
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
@@ -974,8 +1001,12 @@ def preencher_bauru(
                     logger.warning("    '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
+        cols_usou = col_novas[nome_aba]
+        if usou not in cols_usou:
+            # Loja não tem esse USOU — silenciosamente ignora (não é erro)
+            return
         if not dry_run:
-            wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
+            wb[nome_aba].cell(row=linha, column=cols_usou[usou]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
     # ── BSH 6700 ──────────────────────────────────────────────────────────────
@@ -1395,7 +1426,9 @@ def processar_planilha(
         print(f"     Falha ao abrir: {exc}")
         return
 
-    col_novas: Dict[str, int] = {}
+    # Para cada aba: {índice_usou: posição_da_nova_coluna}
+    # Ex.: {' PL 12973': {1: 28, 2: 60}, 'BOQ 11734': {1: 79}}
+    col_novas: Dict[str, Dict[int, int]] = {}
     abas_sem_usou: list = []
 
     for nome_aba in wb.sheetnames:
@@ -1404,11 +1437,11 @@ def processar_planilha(
         ws = wb[nome_aba]
         # USOU primeiro — insere colunas e oculta semanas antigas
         # Novo Pedido depois — sua visibilidade sobrescreve o que o USOU tiver ocultado
-        col_nova = inserir_coluna(ws, dry_run, logger, nome_aba)
-        if col_nova is None:
+        cols_dict = inserir_coluna(ws, dry_run, logger, nome_aba)
+        if cols_dict is None:
             abas_sem_usou.append(nome_aba)
         else:
-            col_novas[nome_aba] = col_nova
+            col_novas[nome_aba] = cols_dict
         inserir_coluna_novo_pedido(ws, dry_run, logger, nome_aba)
 
     # Preencher valores das lojas
@@ -1416,8 +1449,12 @@ def processar_planilha(
 
     # Exibir resultado por loja
     for nome_aba, n_vals in contagem.items():
-        col = col_novas.get(nome_aba, "?")
-        print(f"     {nome_aba:<22} — coluna inserida na posição {col}, {n_vals} valores escritos")
+        cols_dict = col_novas.get(nome_aba)
+        if cols_dict:
+            col = ", ".join(f"USOU{k}={v}" for k, v in cols_dict.items())
+        else:
+            col = "?"
+        print(f"     {nome_aba:<22} — {col}, {n_vals} valores escritos")
 
     if abas_sem_usou:
         nomes = ", ".join(abas_sem_usou)
