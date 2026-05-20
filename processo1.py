@@ -92,7 +92,11 @@ def backup(cfg: dict, dry_run: bool, logger: logging.Logger) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PREFIXOS_IGNORADOS = ("__", "TOTAL")
-_NOMES_IGNORADOS = frozenset({"Planilha1", "LOJAS JAÚ", "AUXILIAR", "AUXILIAR VD'S"})
+_NOMES_IGNORADOS = frozenset({
+    "Planilha1", "AUXILIAR", "AUXILIAR VD'S",
+    "LOJAS JAÚ", "LOJAS PRAIA", "LOJAS BAURU",   # tratadas por avancar_referencias_lojas
+})
+_ABAS_LOJAS = frozenset({"LOJAS JAÚ", "LOJAS PRAIA", "LOJAS BAURU"})
 
 
 def eh_elegivel(nome_aba: str) -> bool:
@@ -1199,6 +1203,67 @@ def inserir_coluna_novo_pedido(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AVANÇAR REFERÊNCIAS NAS ABAS DE LOJAS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _avancar_col_ref(formula: str) -> str:
+    """
+    Transforma ='NomeAba'!CF8 → ='NomeAba'!CG8 (avança a coluna +1).
+    Retorna a fórmula inalterada se o padrão não for reconhecido.
+    """
+    sep = formula.find("'!")          # posição do fecho de aspas + exclamação
+    if sep == -1:
+        return formula
+    prefixo = formula[:sep + 2]       # ex: ='MG 11733'!
+    resto   = formula[sep + 2:]       # ex: CF8
+    # Separar letras da coluna e número da linha
+    i = 0
+    while i < len(resto) and resto[i].isalpha():
+        i += 1
+    if i == 0 or not resto[i:].isdigit():
+        return formula                # formato inesperado — não altera
+    col_letra = resto[:i]
+    linha     = resto[i:]
+    nova_col  = get_column_letter(column_index_from_string(col_letra.upper()) + 1)
+    return f"{prefixo}{nova_col}{linha}"
+
+
+def avancar_referencias_lojas(
+    ws, dry_run: bool, logger: logging.Logger, nome_aba: str
+) -> int:
+    """
+    Percorre todas as células da aba de resumo (LOJAS PRAIA / LOJAS BAURU / LOJAS JAÚ)
+    e avança +1 coluna em cada fórmula do tipo ='NomeAba'!COLlinha.
+    Retorna o número de fórmulas alteradas.
+    """
+    total = 0
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell, MergedCell):
+                continue
+            val = cell.value
+            # Só interessa fórmulas com referência externa: ='NomeAba'!...
+            if not (isinstance(val, str) and val.startswith("='") and "'!" in val):
+                continue
+            nova = _avancar_col_ref(val)
+            if nova == val:
+                continue
+            if not dry_run:
+                cell.value = nova
+            total += 1
+
+    if dry_run:
+        logger.debug(
+            "    [DRY-RUN] Aba '%s': %d referência(s) seriam avançadas", nome_aba, total
+        )
+    else:
+        logger.debug(
+            "    Aba '%s': %d referência(s) avançadas", nome_aba, total
+        )
+    return total
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PROCESSAR UMA PLANILHA PAI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1262,6 +1327,15 @@ def processar_planilha(
         nomes = ", ".join(abas_sem_usou)
         print(f"     {len(abas_sem_usou)} aba(s) sem coluna USOU (ignoradas): {nomes}")
         logger.warning("[%s] Abas sem USOU: %s", label, nomes)
+
+    # Avançar referências nas abas de resumo de lojas (LOJAS PRAIA / LOJAS BAURU / LOJAS JAÚ)
+    for nome_aba in wb.sheetnames:
+        if nome_aba not in _ABAS_LOJAS:
+            continue
+        ws = wb[nome_aba]
+        n = avancar_referencias_lojas(ws, dry_run, logger, nome_aba)
+        if n > 0:
+            print(f"     {nome_aba:<22} — {n} referência(s) avançadas")
 
     if not dry_run:
         try:
