@@ -106,7 +106,7 @@ def eh_elegivel(nome_aba: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cel_tem_data(cell) -> bool:
-    """Retorna True se a célula contém uma data — via tipo Python, número ou fórmula com formato de data."""
+    """Retorna True se a célula contém uma data — via tipo Python, número, fórmula ou texto DD/MM."""
     val = cell.value
     if val is None:
         return False
@@ -120,6 +120,15 @@ def _cel_tem_data(cell) -> bool:
     if isinstance(val, str) and val.startswith("="):
         if any(p in fmt for p in _DATE_PATTERNS):
             return True
+    # Texto literal no formato DD/MM (ex: "14/05", "07/05") — comum em cabeçalhos
+    if isinstance(val, str) and not val.startswith("="):
+        partes = val.strip().split("/")
+        if len(partes) == 2 and partes[0].strip().isdigit() and partes[1].strip().isdigit():
+            try:
+                if 1 <= int(partes[0].strip()) <= 31 and 1 <= int(partes[1].strip()) <= 12:
+                    return True
+            except ValueError:
+                pass
     return False
 
 
@@ -147,7 +156,7 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
     """
     cols_usou = _encontrar_todas_col_usou(ws)
     if not cols_usou:
-        logger.warning("    ⚠ Aba '%s': coluna USOU não encontrada — pulada", nome_aba)
+        logger.warning("     Aba '%s': coluna USOU não encontrada — pulada", nome_aba)
         return None
 
     if dry_run:
@@ -243,7 +252,10 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
         n_shifts = sum(1 for u in sorted_usou if u <= orig_usou)
         final_usou_col = orig_usou + n_shifts
 
-        # Coletar bloco contíguo de colunas de data imediatamente à esquerda do USOU
+        # Coletar bloco contíguo de colunas de data imediatamente à esquerda do USOU.
+        # Se encontrar a coluna âncora "Novo Pedido" (não é data), pula e continua
+        # escaneando para a esquerda — isso permite alcançar o histórico de datas que
+        # fica à esquerda do Novo Pedido em planilhas com esse layout.
         date_cols_region: list = []
         for col in range(final_usou_col - 1, 0, -1):
             tem_data = any(
@@ -253,7 +265,14 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
             if tem_data:
                 date_cols_region.append(col)
             else:
-                break  # saiu do bloco de datas — para
+                # Verifica se é a coluna âncora "Novo Pedido" — se for, pula e continua
+                is_novo_pedido = any(
+                    ws.cell(row=row, column=col).value is not None
+                    and str(ws.cell(row=row, column=col).value).strip().upper() == "NOVO PEDIDO"
+                    for row in range(1, 16)
+                )
+                if not is_novo_pedido:
+                    break  # coluna sem data e sem âncora Novo Pedido — fim do bloco
 
         # date_cols_region[0] = semana atual, [1] = semana anterior, [2+] = antigas
         for i, col in enumerate(date_cols_region):
@@ -295,9 +314,9 @@ def preencher_praia(
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
-                    logger.warning("    ⚠ '%s' sem coluna USOU — não preenchida", nome_aba)
+                    logger.warning("     '%s' sem coluna USOU — não preenchida", nome_aba)
                 else:
-                    logger.warning("    ⚠ '%s' não existe na planilha — ignorada", nome_aba)
+                    logger.warning("     '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
         if not dry_run:
@@ -568,9 +587,9 @@ def preencher_jau(
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
-                    logger.warning("    ⚠ '%s' sem coluna USOU — não preenchida", nome_aba)
+                    logger.warning("     '%s' sem coluna USOU — não preenchida", nome_aba)
                 else:
-                    logger.warning("    ⚠ '%s' não existe na planilha — ignorada", nome_aba)
+                    logger.warning("     '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
         if not dry_run:
@@ -850,9 +869,9 @@ def preencher_bauru(
         if nome_aba not in col_novas:
             if nome_aba not in _warned:
                 if nome_aba in wb.sheetnames:
-                    logger.warning("    ⚠ '%s' sem coluna USOU — não preenchida", nome_aba)
+                    logger.warning("     '%s' sem coluna USOU — não preenchida", nome_aba)
                 else:
-                    logger.warning("    ⚠ '%s' não existe na planilha — ignorada", nome_aba)
+                    logger.warning("    '%s' não existe na planilha — ignorada", nome_aba)
                 _warned.add(nome_aba)
             return
         if not dry_run:
@@ -1200,7 +1219,7 @@ def processar_planilha(
     if not caminho_xlsm.exists():
         msg = f"Arquivo não encontrado: {caminho_xlsm}"
         logger.error(msg)
-        print(f"    ✗ {msg}")
+        print(f"    {msg}")
         return
 
     try:
@@ -1208,11 +1227,11 @@ def processar_planilha(
     except PermissionError:
         msg = f"{caminho_xlsm.name} está aberto em outro programa — feche e tente novamente"
         logger.error(msg)
-        print(f"    ✗ ERRO: {msg}")
+        print(f"     ERRO: {msg}")
         return
     except Exception as exc:
         logger.error("Falha ao abrir %s: %s", caminho_xlsm.name, exc)
-        print(f"    ✗ Falha ao abrir: {exc}")
+        print(f"     Falha ao abrir: {exc}")
         return
 
     col_novas: Dict[str, int] = {}
@@ -1237,11 +1256,11 @@ def processar_planilha(
     # Exibir resultado por loja
     for nome_aba, n_vals in contagem.items():
         col = col_novas.get(nome_aba, "?")
-        print(f"    ✓ {nome_aba:<22} — coluna inserida na posição {col}, {n_vals} valores escritos")
+        print(f"     {nome_aba:<22} — coluna inserida na posição {col}, {n_vals} valores escritos")
 
     if abas_sem_usou:
         nomes = ", ".join(abas_sem_usou)
-        print(f"    ⚠ {len(abas_sem_usou)} aba(s) sem coluna USOU (ignoradas): {nomes}")
+        print(f"     {len(abas_sem_usou)} aba(s) sem coluna USOU (ignoradas): {nomes}")
         logger.warning("[%s] Abas sem USOU: %s", label, nomes)
 
     if not dry_run:
@@ -1251,10 +1270,10 @@ def processar_planilha(
         except PermissionError:
             msg = f"{caminho_xlsm.name} está aberto em outro programa — não foi possível salvar"
             logger.error(msg)
-            print(f"    ✗ ERRO ao salvar: {msg}")
+            print(f"     ERRO ao salvar: {msg}")
         except Exception as exc:
             logger.error("Erro ao salvar %s: %s", caminho_xlsm.name, exc)
-            print(f"    ✗ Erro ao salvar: {exc}")
+            print(f"     Erro ao salvar: {exc}")
     else:
         logger.info("[DRY-RUN] %s não foi modificado", caminho_xlsm.name)
 
@@ -1372,7 +1391,7 @@ def main() -> None:
         caminho, preencher_fn = regioes[regiao]
         processar_planilha(regiao, caminho, wsAux, wsVD, preencher_fn, args.dry_run, logger)
 
-    print("\n  ✅ Processo 1 concluído com sucesso.")
+    print("\n   Processo 1 concluído com sucesso.")
     print("=" * 60)
     logger.info("Processo 1 concluído.")
 

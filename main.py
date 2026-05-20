@@ -225,7 +225,7 @@ def main() -> None:
         mover_arquivo(arquivo, dir_proc_semana)
         lojas_processadas.append(label)
         resultados[codigo] = "ok"
-        logger.info("[%s] ✅ Processada com sucesso.", label)
+        logger.info("[%s]  Processada com sucesso.", label)
 
     # ── Lojas que não enviaram arquivo ───────────────────────────────────
     codigos_recebidos = set(resultados.keys())
@@ -261,23 +261,23 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("RELATÓRIO FINAL — semana %s", semana)
     logger.info(
-        "✅ %d loja(s) processadas com sucesso: %s",
+        " %d loja(s) processadas com sucesso: %s",
         len(lojas_processadas),
         lojas_processadas or "—",
     )
     if lojas_com_erro:
-        logger.info("❌ %d loja(s) com erro:", len(lojas_com_erro))
+        logger.info(" %d loja(s) com erro:", len(lojas_com_erro))
         for label, motivo in lojas_com_erro:
             logger.info("   • %s — %s", label, motivo)
     else:
-        logger.info("❌ 0 lojas com erro.")
+        logger.info(" 0 lojas com erro.")
 
     if lojas_sem_envio:
-        logger.info("⚠️  %d loja(s) não enviaram arquivo:", len(lojas_sem_envio))
+        logger.info("  %d loja(s) não enviaram arquivo:", len(lojas_sem_envio))
         for label in lojas_sem_envio:
             logger.info("   • %s", label)
     else:
-        logger.info("⚠️  Todas as lojas com código cadastrado enviaram arquivo.")
+        logger.info("  Todas as lojas com código cadastrado enviaram arquivo.")
 
     logger.info("=" * 60)
 
