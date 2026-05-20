@@ -88,6 +88,84 @@ def backup(cfg: dict, dry_run: bool, logger: logging.Logger) -> Path:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LEITOR DAS PLANILHAS AUXILIARES (busca por código de produto + código de loja)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LeitorAuxiliar:
+    """
+    Indexa AUXILIAR.xlsx / AUXILIAR_VDS.xlsx por:
+      - Código do produto (coluna A: '00000000089402 - CAIXA...' → '00000000089402')
+      - Código da loja    (linha 1:  '12973', '24790', etc.)
+
+    Uso:
+        leitor = LeitorAuxiliar(wsAux, "AUXILIAR")
+        valor = leitor.get("00000000089402", " PL 12973")
+                       ↑ código do produto    ↑ nome da aba destino (extrai '12973')
+
+    Se o produto ou a loja não forem encontrados, retorna 0 e registra um aviso
+    em self.faltantes (impresso no final pelo main).
+    """
+
+    def __init__(self, ws, nome: str = "AUXILIAR"):
+        self.ws = ws
+        self.nome = nome
+        self.produtos: Dict[str, int] = {}   # codigo_produto → linha
+        self.lojas: Dict[str, int] = {}      # codigo_loja    → coluna
+        self.faltantes: set = set()
+        self._construir_indice()
+
+    def _construir_indice(self) -> None:
+        # Produtos (coluna A, linhas 2+)
+        for row in range(2, self.ws.max_row + 1):
+            val = self.ws.cell(row=row, column=1).value
+            if val is None:
+                continue
+            s = str(val).strip()
+            if not s or s.lower() in ("total", "produtos"):
+                continue
+            # Código fica antes de " - "
+            cod = s.split(" - ")[0].strip()
+            if cod and cod[0].isdigit():
+                # Se duplicar, mantém a primeira ocorrência
+                if cod not in self.produtos:
+                    self.produtos[cod] = row
+
+        # Lojas (linha 1, colunas 2+)
+        for col in range(2, self.ws.max_column + 1):
+            val = self.ws.cell(row=1, column=col).value
+            if val is None:
+                continue
+            cod = str(val).strip()
+            if cod and cod.lower() != "produtos":
+                self.lojas[cod] = col
+
+    @staticmethod
+    def _extrair_codigo_loja(nome_aba: str) -> str:
+        """' PL 12973' → '12973'  |  'ATC - 23012' → '23012'  |  'ER BOQ - 23614' → '23614'"""
+        partes = nome_aba.strip().split()
+        return partes[-1] if partes else ""
+
+    def get(self, produto_codigo: str, nome_aba_destino: str):
+        """Retorna o valor da célula (produto × loja). Retorna 0 se não encontrar."""
+        loja_codigo = self._extrair_codigo_loja(nome_aba_destino)
+        row = self.produtos.get(produto_codigo)
+        col = self.lojas.get(loja_codigo)
+        if row is None:
+            self.faltantes.add(
+                f"{self.nome}: produto '{produto_codigo}' não encontrado "
+                f"(usado pela aba '{nome_aba_destino}')"
+            )
+            return 0
+        if col is None:
+            self.faltantes.add(
+                f"{self.nome}: loja '{loja_codigo}' não encontrada na linha 1 "
+                f"(aba destino: '{nome_aba_destino}')"
+            )
+            return 0
+        return self.ws.cell(row=row, column=col).value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ELEGIBILIDADE DE ABAS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -298,21 +376,27 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
 
 def preencher_praia(
     wb,
-    wsAux,
-    wsVD,
+    leitor_aux: "LeitorAuxiliar",
+    leitor_vds: "LeitorAuxiliar",
     col_novas: Dict[str, int],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
     """
     Escreve valores nas abas da Planilha Praia lendo de AUXILIAR e AUXILIAR VD'S.
+    Acesso via código de produto + código de loja (imune a inserção/reordenação
+    de linhas/colunas nas auxiliares).
     Retorna {nome_aba: quantidade_de_valores_escritos}.
     """
     contagem: Dict[str, int] = {}
     _warned: set = set()
 
-    def c(ws_src, r: int, col: int):
-        return ws_src.cell(row=r, column=col).value
+    # Acessores curtos para legibilidade
+    def aux(cod_prod: str, nome_aba: str):
+        return leitor_aux.get(cod_prod, nome_aba)
+
+    def vds(cod_prod: str, nome_aba: str):
+        return leitor_vds.get(cod_prod, nome_aba)
 
     def esc(nome_aba: str, linha: int, valor: float) -> None:
         if nome_aba not in col_novas:
@@ -327,240 +411,240 @@ def preencher_praia(
             wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
-    # ── PL 12973 (AUXILIAR col 2) ─────────────────────────────────────────────
+    # ── PL 12973 ──────────────────────────────────────────────────────────────
     n = " PL 12973"  # aba tem espaço na frente no arquivo
-    esc(n, 20, vz(c(wsAux,2,2))  + vz(c(wsAux,3,2)))
-    esc(n, 21, vz(c(wsAux,4,2))  + vz(c(wsAux,5,2)))
-    esc(n, 22, vz(c(wsAux,6,2)))
-    esc(n, 25, vz(c(wsAux,8,2)))
-    esc(n, 26, vz(c(wsAux,9,2)))
-    esc(n, 27, vz(c(wsAux,10,2)))
-    esc(n, 30, vz(c(wsAux,22,2)))
-    esc(n, 31, vz(c(wsAux,22,2)))  # mesmo valor da linha 30
-    esc(n, 32, vz(c(wsAux,23,2)))
-    esc(n, 33, vz(c(wsAux,24,2)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 25, vz(aux("00000000086027", n)))
+    esc(n, 26, vz(aux("00000000087691", n)))
+    esc(n, 27, vz(aux("00000000087694", n)))
+    esc(n, 30, vz(aux("00000000094778", n)))
+    esc(n, 31, vz(aux("00000000094778", n)))  # mesmo valor da linha 30
+    esc(n, 32, vz(aux("00000000094779", n)))
+    esc(n, 33, vz(aux("00000000095151", n)))
 
-    # ── BOQ 11734 (AUXILIAR col 3) ────────────────────────────────────────────
+    # ── BOQ 11734 ─────────────────────────────────────────────────────────────
     n = "BOQ 11734"
-    esc(n, 20, vz(c(wsAux,2,3))  + vz(c(wsAux,3,3)))
-    esc(n, 21, vz(c(wsAux,4,3))  + vz(c(wsAux,5,3)))
-    esc(n, 22, vz(c(wsAux,6,3)))
-    esc(n, 26, vz(c(wsAux,8,3)))
-    esc(n, 32, vz(c(wsAux,9,3)))
-    esc(n, 33, vz(c(wsAux,10,3)))
-    esc(n, 45, vz(c(wsAux,19,3)))
-    esc(n, 46, vz(c(wsAux,20,3)))
-    esc(n, 47, vz(c(wsAux,21,3)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 32, vz(aux("00000000087691", n)))
+    esc(n, 33, vz(aux("00000000087694", n)))
+    esc(n, 45, vz(aux("00000000094775", n)))
+    esc(n, 46, vz(aux("00000000094776", n)))
+    esc(n, 47, vz(aux("00000000094777", n)))
 
-    # ── TP 14462 (AUXILIAR col 4) ─────────────────────────────────────────────
+    # ── TP 14462 ──────────────────────────────────────────────────────────────
     n = "TP 14462"
-    esc(n, 20, vz(c(wsAux,2,4))  + vz(c(wsAux,3,4)))
-    esc(n, 21, vz(c(wsAux,4,4))  + vz(c(wsAux,5,4)))
-    esc(n, 22, vz(c(wsAux,6,4)))
-    esc(n, 25, vz(c(wsAux,8,4)))
-    esc(n, 31, vz(c(wsAux,9,4)))
-    esc(n, 32, vz(c(wsAux,10,4)))
-    esc(n, 45, vz(c(wsAux,22,4)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 25, vz(aux("00000000086027", n)))
+    esc(n, 31, vz(aux("00000000087691", n)))
+    esc(n, 32, vz(aux("00000000087694", n)))
+    esc(n, 45, vz(aux("00000000094778", n)))
 
-    # ── PB 5418 (AUXILIAR col 5) ──────────────────────────────────────────────
+    # ── PB 5418 ───────────────────────────────────────────────────────────────
     n = "PB 5418"
-    esc(n, 20, vz(c(wsAux,2,5))  + vz(c(wsAux,3,5)))
-    esc(n, 21, vz(c(wsAux,4,5))  + vz(c(wsAux,5,5)))
-    esc(n, 22, vz(c(wsAux,6,5)))
-    esc(n, 43, vz(c(wsAux,20,5)))
-    esc(n, 44, vz(c(wsAux,21,5)))
-    esc(n, 46, vz(c(wsAux,22,5)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 43, vz(aux("00000000094776", n)))
+    esc(n, 44, vz(aux("00000000094777", n)))
+    esc(n, 46, vz(aux("00000000094778", n)))
 
-    # ── MG 11733 (AUXILIAR col 6) ─────────────────────────────────────────────
+    # ── MG 11733 ──────────────────────────────────────────────────────────────
     n = "MG 11733"
-    esc(n, 20, vz(c(wsAux,2,6))  + vz(c(wsAux,3,6)))
-    esc(n, 21, vz(c(wsAux,4,6))  + vz(c(wsAux,5,6)))
-    esc(n, 22, vz(c(wsAux,6,6)))
-    esc(n, 25, vz(c(wsAux,8,6)))
-    esc(n, 30, vz(c(wsAux,22,6)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 25, vz(aux("00000000086027", n)))
+    esc(n, 30, vz(aux("00000000094778", n)))
 
-    # ── ATC - 23012 (AUXILIAR col 7) ──────────────────────────────────────────
+    # ── ATC - 23012 ───────────────────────────────────────────────────────────
     n = "ATC - 23012"
-    esc(n, 20, vz(c(wsAux,2,7))  + vz(c(wsAux,3,7)))
-    esc(n, 21, vz(c(wsAux,4,7))  + vz(c(wsAux,5,7)))
-    esc(n, 22, vz(c(wsAux,6,7)))
-    esc(n, 25, vz(c(wsAux,8,7)))
-    esc(n, 45, vz(c(wsAux,19,7)))
-    esc(n, 46, vz(c(wsAux,20,7)))
-    esc(n, 47, vz(c(wsAux,21,7)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 25, vz(aux("00000000086027", n)))
+    esc(n, 45, vz(aux("00000000094775", n)))
+    esc(n, 46, vz(aux("00000000094776", n)))
+    esc(n, 47, vz(aux("00000000094777", n)))
 
-    # ── CDP - 24790 (AUXILIAR VD'S col 3) ────────────────────────────────────
+    # ── CDP - 24790 ───────────────────────────────────────────────────────────
     n = "CDP - 24790"
-    esc(n, 21,  vz(c(wsVD,2,3)))
-    esc(n, 22,  vz(c(wsVD,3,3)))
-    esc(n, 23,  vz(c(wsVD,4,3)))
-    esc(n, 26,  vz(c(wsVD,8,3))  + vz(c(wsVD,9,3)))
-    esc(n, 27,  vz(c(wsVD,10,3)))
-    esc(n, 28,  vz(c(wsVD,11,3)) + vz(c(wsVD,12,3)) + vz(c(wsVD,13,3)))
-    esc(n, 31,  vz(c(wsVD,14,3)) + vz(c(wsVD,15,3)))
-    esc(n, 32,  vz(c(wsVD,16,3)))
-    esc(n, 33,  vz(c(wsVD,17,3)))
-    esc(n, 39,  vz(c(wsVD,18,3)))
-    esc(n, 42,  vz(c(wsVD,19,3)))
-    esc(n, 43,  vz(c(wsVD,20,3)))
-    esc(n, 44,  vz(c(wsVD,21,3)))
-    esc(n, 48,  vz(c(wsVD,22,3)))
-    esc(n, 49,  vz(c(wsVD,23,3)))
-    esc(n, 50,  vz(c(wsVD,24,3)))
-    esc(n, 64,  vz(c(wsVD,33,3)))
-    esc(n, 65,  vz(c(wsVD,34,3)))
-    esc(n, 66,  vz(c(wsVD,35,3)))
-    esc(n, 67,  vz(c(wsVD,36,3)))
-    esc(n, 68,  vz(c(wsVD,37,3)))
-    esc(n, 69,  vz(c(wsVD,38,3)))
-    esc(n, 87,  vz(c(wsVD,51,3)))
-    esc(n, 88,  vz(c(wsVD,52,3)))
-    esc(n, 89,  vz(c(wsVD,53,3)))
-    esc(n, 90,  vz(c(wsVD,54,3)))
-    esc(n, 91,  vz(c(wsVD,55,3)))
-    esc(n, 107, vz(c(wsVD,40,3)))
-    esc(n, 108, vz(c(wsVD,41,3)))
-    esc(n, 109, vz(c(wsVD,42,3)))
-    esc(n, 110, vz(c(wsVD,43,3)))
-    esc(n, 116, vz(c(wsVD,44,3)))
-    esc(n, 117, vz(c(wsVD,45,3)))
-    esc(n, 119, vz(c(wsVD,47,3)))
-    esc(n, 120, vz(c(wsVD,48,3)))
-    esc(n, 121, vz(c(wsVD,49,3)))
-    esc(n, 122, vz(c(wsVD,50,3)))
+    esc(n, 21,  vz(vds("00000000090819", n)))
+    esc(n, 22,  vz(vds("00000000090821", n)))
+    esc(n, 23,  vz(vds("00000000090822", n)))
+    esc(n, 26,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 27,  vz(vds("00000000030190", n)))
+    esc(n, 28,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 31,  vz(vds("00000000089402", n)) + vz(vds("00000000003682", n)))
+    esc(n, 32,  vz(vds("00000000089401", n)))
+    esc(n, 33,  vz(vds("00000000003704", n)))
+    esc(n, 39,  vz(vds("00000000054572", n)))
+    esc(n, 42,  vz(vds("00000000046885", n)))
+    esc(n, 43,  vz(vds("00000000046886", n)))
+    esc(n, 44,  vz(vds("00000000046887", n)))
+    esc(n, 48,  vz(vds("00000000046888", n)))
+    esc(n, 49,  vz(vds("00000000046890", n)))
+    esc(n, 50,  vz(vds("00000000046891", n)))
+    esc(n, 64,  vz(vds("00000000052276", n)))
+    esc(n, 65,  vz(vds("00000000052288", n)))
+    esc(n, 66,  vz(vds("00000000053653", n)))
+    esc(n, 67,  vz(vds("00000000053654", n)))
+    esc(n, 68,  vz(vds("00000000053655", n)))
+    esc(n, 69,  vz(vds("00000000053656", n)))
+    esc(n, 87,  vz(vds("00000000085706", n)))
+    esc(n, 88,  vz(vds("00000000094959", n)))
+    esc(n, 89,  vz(vds("00000000095150", n)))
+    esc(n, 90,  vz(vds("00000000085705", n)))
+    esc(n, 91,  vz(vds("00000000085704", n)))
+    esc(n, 107, vz(vds("00000000094371", n)))
+    esc(n, 108, vz(vds("00000000095162", n)))
+    esc(n, 109, vz(vds("00000000088796", n)))
+    esc(n, 110, vz(vds("00000000088799", n)))
+    esc(n, 116, vz(vds("00000000096442", n)))
+    esc(n, 117, vz(vds("00000000096443", n)))
+    esc(n, 119, vz(vds("00000000097241", n)))
+    esc(n, 120, vz(vds("00000000096437", n)))
+    esc(n, 121, vz(vds("00000000096438", n)))
+    esc(n, 122, vz(vds("00000000096441", n)))
 
-    # ── ER BOQ - 23614 (AUXILIAR VD'S col 4) ─────────────────────────────────
+    # ── ER BOQ - 23614 ────────────────────────────────────────────────────────
     n = "ER BOQ - 23614"
-    esc(n, 22,  vz(c(wsVD,2,4)))
-    esc(n, 23,  vz(c(wsVD,3,4)))
-    esc(n, 24,  vz(c(wsVD,4,4)))
-    esc(n, 27,  vz(c(wsVD,5,4)))
-    esc(n, 28,  vz(c(wsVD,6,4)))
-    esc(n, 29,  vz(c(wsVD,7,4)))
-    esc(n, 32,  vz(c(wsVD,8,4))  + vz(c(wsVD,9,4)))
-    esc(n, 33,  vz(c(wsVD,10,4)))
-    esc(n, 34,  vz(c(wsVD,11,4)) + vz(c(wsVD,12,4)) + vz(c(wsVD,13,4)) + vz(c(wsVD,14,4)))
-    esc(n, 37,  vz(c(wsVD,15,4)) + vz(c(wsVD,16,4)))
-    esc(n, 38,  vz(c(wsVD,17,4)))
-    esc(n, 39,  vz(c(wsVD,18,4)))
-    esc(n, 46,  vz(c(wsVD,19,4)))
-    esc(n, 47,  vz(c(wsVD,20,4)))
-    esc(n, 48,  vz(c(wsVD,21,4)))
-    esc(n, 55,  vz(c(wsVD,22,4)))
-    esc(n, 56,  vz(c(wsVD,23,4)))
-    esc(n, 57,  vz(c(wsVD,24,4)))
-    esc(n, 78,  vz(c(wsVD,33,4)))
-    esc(n, 79,  vz(c(wsVD,34,4)))
-    esc(n, 80,  vz(c(wsVD,35,4)))
-    esc(n, 81,  vz(c(wsVD,36,4)))
-    esc(n, 82,  vz(c(wsVD,37,4)))
-    esc(n, 83,  vz(c(wsVD,38,4)))
-    esc(n, 88,  vz(c(wsVD,71,4)))
-    esc(n, 93,  vz(c(wsVD,70,4)))
-    esc(n, 96,  vz(c(wsVD,51,4)))
-    esc(n, 97,  vz(c(wsVD,52,4)))
-    esc(n, 98,  vz(c(wsVD,53,4)))
-    esc(n, 99,  vz(c(wsVD,54,4)))
-    esc(n, 100, vz(c(wsVD,55,4)))
-    esc(n, 116, vz(c(wsVD,40,4)))
-    esc(n, 117, vz(c(wsVD,41,4)))
-    esc(n, 118, vz(c(wsVD,42,4)))
-    esc(n, 119, vz(c(wsVD,43,4)))
-    esc(n, 125, vz(c(wsVD,44,4)))
-    esc(n, 126, vz(c(wsVD,45,4)))
-    esc(n, 127, vz(c(wsVD,46,4)))
-    esc(n, 128, vz(c(wsVD,47,4)))
-    esc(n, 130, vz(c(wsVD,49,4)))
-    esc(n, 131, vz(c(wsVD,50,4)))
+    esc(n, 22,  vz(vds("00000000090819", n)))
+    esc(n, 23,  vz(vds("00000000090821", n)))
+    esc(n, 24,  vz(vds("00000000090822", n)))
+    esc(n, 27,  vz(vds("00000000003591", n)))
+    esc(n, 28,  vz(vds("00000000003608", n)))
+    esc(n, 29,  vz(vds("00000000003610", n)))
+    esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 33,  vz(vds("00000000030190", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 37,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
+    esc(n, 38,  vz(vds("00000000003704", n)))
+    esc(n, 39,  vz(vds("00000000054572", n)))
+    esc(n, 46,  vz(vds("00000000046885", n)))
+    esc(n, 47,  vz(vds("00000000046886", n)))
+    esc(n, 48,  vz(vds("00000000046887", n)))
+    esc(n, 55,  vz(vds("00000000046888", n)))
+    esc(n, 56,  vz(vds("00000000046890", n)))
+    esc(n, 57,  vz(vds("00000000046891", n)))
+    esc(n, 78,  vz(vds("00000000052276", n)))
+    esc(n, 79,  vz(vds("00000000052288", n)))
+    esc(n, 80,  vz(vds("00000000053653", n)))
+    esc(n, 81,  vz(vds("00000000053654", n)))
+    esc(n, 82,  vz(vds("00000000053655", n)))
+    esc(n, 83,  vz(vds("00000000053656", n)))
+    esc(n, 88,  vz(vds("00000000090451", n)))
+    esc(n, 93,  vz(vds("00000000087694", n)))
+    esc(n, 96,  vz(vds("00000000085706", n)))
+    esc(n, 97,  vz(vds("00000000094959", n)))
+    esc(n, 98,  vz(vds("00000000095150", n)))
+    esc(n, 99,  vz(vds("00000000085705", n)))
+    esc(n, 100, vz(vds("00000000085704", n)))
+    esc(n, 116, vz(vds("00000000094371", n)))
+    esc(n, 117, vz(vds("00000000095162", n)))
+    esc(n, 118, vz(vds("00000000088796", n)))
+    esc(n, 119, vz(vds("00000000088799", n)))
+    esc(n, 125, vz(vds("00000000096442", n)))
+    esc(n, 126, vz(vds("00000000096443", n)))
+    esc(n, 127, vz(vds("00000000096444", n)))
+    esc(n, 128, vz(vds("00000000097241", n)))
+    esc(n, 130, vz(vds("00000000096438", n)))
+    esc(n, 131, vz(vds("00000000096441", n)))
 
-    # ── ER PBE - 23343 (AUXILIAR VD'S col 5) ─────────────────────────────────
+    # ── ER PBE - 23343 ────────────────────────────────────────────────────────
     n = "ER PBE - 23343"
-    esc(n, 22,  vz(c(wsVD,2,5)))
-    esc(n, 23,  vz(c(wsVD,3,5)))
-    esc(n, 24,  vz(c(wsVD,4,5)))
-    esc(n, 27,  vz(c(wsVD,5,5)))
-    esc(n, 28,  vz(c(wsVD,6,5)))
-    esc(n, 29,  vz(c(wsVD,7,5)))
-    esc(n, 32,  vz(c(wsVD,8,5))  + vz(c(wsVD,9,5)))
-    esc(n, 33,  vz(c(wsVD,10,5)))
-    esc(n, 34,  vz(c(wsVD,11,5)) + vz(c(wsVD,12,5)) + vz(c(wsVD,13,5)) + vz(c(wsVD,14,5)))
-    esc(n, 37,  vz(c(wsVD,15,5)) + vz(c(wsVD,16,5)))
-    esc(n, 38,  vz(c(wsVD,17,5)))
-    esc(n, 39,  vz(c(wsVD,18,5)))
-    esc(n, 46,  vz(c(wsVD,19,5)))
-    esc(n, 47,  vz(c(wsVD,20,5)))
-    esc(n, 48,  vz(c(wsVD,21,5)))
-    esc(n, 55,  vz(c(wsVD,22,5)))
-    esc(n, 56,  vz(c(wsVD,23,5)))
-    esc(n, 57,  vz(c(wsVD,24,5)))
-    esc(n, 67,  vz(c(wsVD,27,5)) + vz(c(wsVD,28,5)))
-    esc(n, 68,  vz(c(wsVD,30,5)))  # 30 antes de 29 — invertido propositalmente
-    esc(n, 69,  vz(c(wsVD,29,5)))
-    esc(n, 78,  vz(c(wsVD,33,5)))
-    esc(n, 79,  vz(c(wsVD,34,5)))
-    esc(n, 80,  vz(c(wsVD,35,5)))
-    esc(n, 81,  vz(c(wsVD,36,5)))
-    esc(n, 82,  vz(c(wsVD,37,5)))
-    esc(n, 83,  vz(c(wsVD,38,5)))
-    esc(n, 88,  vz(c(wsVD,71,5)))
-    esc(n, 96,  vz(c(wsVD,51,5)))
-    esc(n, 99,  vz(c(wsVD,54,5)))
-    esc(n, 116, vz(c(wsVD,40,5)))
-    esc(n, 117, vz(c(wsVD,41,5)))
-    esc(n, 118, vz(c(wsVD,42,5)))
-    esc(n, 119, vz(c(wsVD,43,5)))
-    esc(n, 125, vz(c(wsVD,44,5)))
-    esc(n, 126, vz(c(wsVD,45,5)))
-    esc(n, 128, vz(c(wsVD,46,5)))
-    esc(n, 129, vz(c(wsVD,48,5)))  # linha 47 da VD ignorada
-    esc(n, 130, vz(c(wsVD,49,5)))
-    esc(n, 131, vz(c(wsVD,50,5)))
+    esc(n, 22,  vz(vds("00000000090819", n)))
+    esc(n, 23,  vz(vds("00000000090821", n)))
+    esc(n, 24,  vz(vds("00000000090822", n)))
+    esc(n, 27,  vz(vds("00000000003591", n)))
+    esc(n, 28,  vz(vds("00000000003608", n)))
+    esc(n, 29,  vz(vds("00000000003610", n)))
+    esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 33,  vz(vds("00000000030190", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 37,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
+    esc(n, 38,  vz(vds("00000000003704", n)))
+    esc(n, 39,  vz(vds("00000000054572", n)))
+    esc(n, 46,  vz(vds("00000000046885", n)))
+    esc(n, 47,  vz(vds("00000000046886", n)))
+    esc(n, 48,  vz(vds("00000000046887", n)))
+    esc(n, 55,  vz(vds("00000000046888", n)))
+    esc(n, 56,  vz(vds("00000000046890", n)))
+    esc(n, 57,  vz(vds("00000000046891", n)))
+    esc(n, 67,  vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 68,  vz(vds("00000000056378", n)))  # 30 antes de 29 — invertido propositalmente
+    esc(n, 69,  vz(vds("00000000056376", n)))
+    esc(n, 78,  vz(vds("00000000052276", n)))
+    esc(n, 79,  vz(vds("00000000052288", n)))
+    esc(n, 80,  vz(vds("00000000053653", n)))
+    esc(n, 81,  vz(vds("00000000053654", n)))
+    esc(n, 82,  vz(vds("00000000053655", n)))
+    esc(n, 83,  vz(vds("00000000053656", n)))
+    esc(n, 88,  vz(vds("00000000090451", n)))
+    esc(n, 96,  vz(vds("00000000085706", n)))
+    esc(n, 99,  vz(vds("00000000085705", n)))
+    esc(n, 116, vz(vds("00000000094371", n)))
+    esc(n, 117, vz(vds("00000000095162", n)))
+    esc(n, 118, vz(vds("00000000088796", n)))
+    esc(n, 119, vz(vds("00000000088799", n)))
+    esc(n, 125, vz(vds("00000000096442", n)))
+    esc(n, 126, vz(vds("00000000096443", n)))
+    esc(n, 128, vz(vds("00000000096444", n)))
+    esc(n, 129, vz(vds("00000000096437", n)))  # linha 47 da VD ignorada
+    esc(n, 130, vz(vds("00000000096438", n)))
+    esc(n, 131, vz(vds("00000000096441", n)))
 
-    # ── ER MG - 24119 (AUXILIAR VD'S col 6) ──────────────────────────────────
+    # ── ER MG - 24119 ─────────────────────────────────────────────────────────
     n = "ER MG - 24119"
-    esc(n, 22,  vz(c(wsVD,2,6)))
-    esc(n, 23,  vz(c(wsVD,3,6)))
-    esc(n, 24,  vz(c(wsVD,4,6)))
-    esc(n, 27,  vz(c(wsVD,8,6))  + vz(c(wsVD,9,6)))
-    esc(n, 28,  vz(c(wsVD,10,6)))
-    esc(n, 29,  vz(c(wsVD,11,6)) + vz(c(wsVD,12,6)) + vz(c(wsVD,13,6)) + vz(c(wsVD,14,6)))
-    esc(n, 32,  vz(c(wsVD,15,6)) + vz(c(wsVD,16,6)))
-    esc(n, 33,  vz(c(wsVD,17,6)))
-    esc(n, 38,  vz(c(wsVD,18,6)))
-    esc(n, 41,  vz(c(wsVD,19,6)))
-    esc(n, 42,  vz(c(wsVD,20,6)))
-    esc(n, 43,  vz(c(wsVD,21,6)))
-    esc(n, 50,  vz(c(wsVD,22,6)))
-    esc(n, 51,  vz(c(wsVD,23,6)))
-    esc(n, 52,  vz(c(wsVD,24,6)))
-    esc(n, 62,  vz(c(wsVD,26,6)) + vz(c(wsVD,27,6)) + vz(c(wsVD,28,6)))
-    esc(n, 63,  vz(c(wsVD,30,6)))  # 30 antes de 29 — invertido propositalmente
-    esc(n, 64,  vz(c(wsVD,29,6)))
-    esc(n, 73,  vz(c(wsVD,33,6)))
-    esc(n, 74,  vz(c(wsVD,34,6)))
-    esc(n, 75,  vz(c(wsVD,35,6)))
-    esc(n, 76,  vz(c(wsVD,36,6)))
-    esc(n, 77,  vz(c(wsVD,37,6)))
-    esc(n, 78,  vz(c(wsVD,38,6)))
-    esc(n, 91,  vz(c(wsVD,51,6)))
-    esc(n, 94,  vz(c(wsVD,54,6)))
-    esc(n, 95,  vz(c(wsVD,55,6)))
-    esc(n, 98,  vz(c(wsVD,56,6)))
-    esc(n, 99,  vz(c(wsVD,57,6)))
-    esc(n, 102, vz(c(wsVD,58,6)))
-    esc(n, 103, vz(c(wsVD,59,6)))
-    esc(n, 104, vz(c(wsVD,60,6)))
-    esc(n, 105, vz(c(wsVD,61,6)))
-    esc(n, 111, vz(c(wsVD,41,6)))
-    esc(n, 112, vz(c(wsVD,42,6)))
-    esc(n, 113, vz(c(wsVD,43,6)))
-    esc(n, 114, vz(c(wsVD,44,6)))
-    esc(n, 120, vz(c(wsVD,45,6)))
-    esc(n, 121, vz(c(wsVD,46,6)))
-    esc(n, 123, vz(c(wsVD,47,6)))
-    esc(n, 124, vz(c(wsVD,48,6)))
-    esc(n, 125, vz(c(wsVD,49,6)))
-    esc(n, 126, vz(c(wsVD,50,6)))
+    esc(n, 22,  vz(vds("00000000090819", n)))
+    esc(n, 23,  vz(vds("00000000090821", n)))
+    esc(n, 24,  vz(vds("00000000090822", n)))
+    esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 28,  vz(vds("00000000030190", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 32,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
+    esc(n, 33,  vz(vds("00000000003704", n)))
+    esc(n, 38,  vz(vds("00000000054572", n)))
+    esc(n, 41,  vz(vds("00000000046885", n)))
+    esc(n, 42,  vz(vds("00000000046886", n)))
+    esc(n, 43,  vz(vds("00000000046887", n)))
+    esc(n, 50,  vz(vds("00000000046888", n)))
+    esc(n, 51,  vz(vds("00000000046890", n)))
+    esc(n, 52,  vz(vds("00000000046891", n)))
+    esc(n, 62,  vz(vds("00000000050110", n)) + vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 63,  vz(vds("00000000056378", n)))  # 30 antes de 29 — invertido propositalmente
+    esc(n, 64,  vz(vds("00000000056376", n)))
+    esc(n, 73,  vz(vds("00000000052276", n)))
+    esc(n, 74,  vz(vds("00000000052288", n)))
+    esc(n, 75,  vz(vds("00000000053653", n)))
+    esc(n, 76,  vz(vds("00000000053654", n)))
+    esc(n, 77,  vz(vds("00000000053655", n)))
+    esc(n, 78,  vz(vds("00000000053656", n)))
+    esc(n, 91,  vz(vds("00000000085706", n)))
+    esc(n, 94,  vz(vds("00000000085705", n)))
+    esc(n, 95,  vz(vds("00000000085704", n)))
+    esc(n, 98,  vz(vds("00000000094783", n)))
+    esc(n, 99,  vz(vds("00000000094781", n)))
+    esc(n, 102, vz(vds("00000000094775", n)))
+    esc(n, 103, vz(vds("00000000094776", n)))
+    esc(n, 104, vz(vds("00000000094778", n)))
+    esc(n, 105, vz(vds("00000000094779", n)))
+    esc(n, 111, vz(vds("00000000095162", n)))
+    esc(n, 112, vz(vds("00000000088796", n)))
+    esc(n, 113, vz(vds("00000000088799", n)))
+    esc(n, 114, vz(vds("00000000096442", n)))
+    esc(n, 120, vz(vds("00000000096443", n)))
+    esc(n, 121, vz(vds("00000000096444", n)))
+    esc(n, 123, vz(vds("00000000097241", n)))
+    esc(n, 124, vz(vds("00000000096437", n)))
+    esc(n, 125, vz(vds("00000000096438", n)))
+    esc(n, 126, vz(vds("00000000096441", n)))
 
     return contagem
 
@@ -571,21 +655,27 @@ def preencher_praia(
 
 def preencher_jau(
     wb,
-    wsAux,
-    wsVD,
+    leitor_aux: "LeitorAuxiliar",
+    leitor_vds: "LeitorAuxiliar",
     col_novas: Dict[str, int],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
     """
     Escreve valores nas abas da Planilha Jaú lendo de AUXILIAR e AUXILIAR VD'S.
+    Acesso via código de produto + código de loja (imune a inserção/reordenação
+    de linhas/colunas nas auxiliares).
     Retorna {nome_aba: quantidade_de_valores_escritos}.
     """
     contagem: Dict[str, int] = {}
     _warned: set = set()
 
-    def c(ws_src, r: int, col: int):
-        return ws_src.cell(row=r, column=col).value
+    # Acessores curtos para legibilidade
+    def aux(cod_prod: str, nome_aba: str):
+        return leitor_aux.get(cod_prod, nome_aba)
+
+    def vds(cod_prod: str, nome_aba: str):
+        return leitor_vds.get(cod_prod, nome_aba)
 
     def esc(nome_aba: str, linha: int, valor: float) -> None:
         if nome_aba not in col_novas:
@@ -600,249 +690,249 @@ def preencher_jau(
             wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
-    # ── JC 3822 (AUXILIAR col 16) ─────────────────────────────────────────────
+    # ── JC 3822 ───────────────────────────────────────────────────────────────
     n = "JC 3822"
-    esc(n, 20, vz(c(wsAux,2,16))  + vz(c(wsAux,3,16)))
-    esc(n, 21, vz(c(wsAux,4,16))  + vz(c(wsAux,5,16)))
-    esc(n, 22, vz(c(wsAux,6,16)))
-    esc(n, 23, vz(c(wsAux,7,16)))
-    esc(n, 26, vz(c(wsAux,8,16)))
-    esc(n, 29, vz(c(wsAux,11,16)))
-    esc(n, 30, vz(c(wsAux,12,16)))
-    esc(n, 31, vz(c(wsAux,13,16)))
-    esc(n, 32, vz(c(wsAux,18,16)))
-    esc(n, 33, vz(c(wsAux,19,16)))
-    esc(n, 34, vz(c(wsAux,20,16)))
-    esc(n, 37, vz(c(wsAux,24,16)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 29, vz(aux("00000000090774", n)))
+    esc(n, 30, vz(aux("00000000090770", n)))
+    esc(n, 31, vz(aux("00000000090772", n)))
+    esc(n, 32, vz(aux("00000000094682", n)))
+    esc(n, 33, vz(aux("00000000094775", n)))
+    esc(n, 34, vz(aux("00000000094776", n)))
+    esc(n, 37, vz(aux("00000000095151", n)))
 
-    # ── JD 14446 (AUXILIAR col 17) ────────────────────────────────────────────
+    # ── JD 14446 ──────────────────────────────────────────────────────────────
     n = "JD 14446"
-    esc(n, 20, vz(c(wsAux,2,17))  + vz(c(wsAux,3,17)))
-    esc(n, 21, vz(c(wsAux,4,17))  + vz(c(wsAux,5,17)))
-    esc(n, 22, vz(c(wsAux,6,17)))
-    esc(n, 23, vz(c(wsAux,7,17)))
-    esc(n, 26, vz(c(wsAux,8,17)))
-    esc(n, 34, vz(c(wsAux,24,17)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 34, vz(aux("00000000095151", n)))
 
-    # ── BB 12066 (AUXILIAR col 18) ────────────────────────────────────────────
+    # ── BB 12066 ──────────────────────────────────────────────────────────────
     n = "BB 12066"
-    esc(n, 20, vz(c(wsAux,2,18))  + vz(c(wsAux,3,18)))
-    esc(n, 21, vz(c(wsAux,4,18))  + vz(c(wsAux,5,18)))
-    esc(n, 22, vz(c(wsAux,6,18)))
-    esc(n, 23, vz(c(wsAux,7,18)))
-    esc(n, 26, vz(c(wsAux,8,18)))
-    esc(n, 29, vz(c(wsAux,19,18)))
-    esc(n, 30, vz(c(wsAux,20,18)))
-    esc(n, 33, vz(c(wsAux,24,18)))
-    esc(n, 34, vz(c(wsAux,18,18)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 29, vz(aux("00000000094775", n)))
+    esc(n, 30, vz(aux("00000000094776", n)))
+    esc(n, 33, vz(aux("00000000095151", n)))
+    esc(n, 34, vz(aux("00000000094682", n)))
 
-    # ── SM 23048 (AUXILIAR col 19) ────────────────────────────────────────────
+    # ── SM 23048 ──────────────────────────────────────────────────────────────
     n = "SM 23048"
-    esc(n, 20, vz(c(wsAux,2,19))  + vz(c(wsAux,3,19)))
-    esc(n, 21, vz(c(wsAux,4,19))  + vz(c(wsAux,5,19)))
-    esc(n, 22, vz(c(wsAux,6,19)))
-    esc(n, 23, vz(c(wsAux,7,19)))
-    esc(n, 26, vz(c(wsAux,8,19)))
-    esc(n, 34, vz(c(wsAux,24,19)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 34, vz(aux("00000000095151", n)))
 
-    # ── JSH 11722 (AUXILIAR col 20) ───────────────────────────────────────────
+    # ── JSH 11722 ─────────────────────────────────────────────────────────────
     n = "JSH 11722"
-    esc(n, 20, vz(c(wsAux,2,20))  + vz(c(wsAux,3,20)))
-    esc(n, 21, vz(c(wsAux,4,20))  + vz(c(wsAux,5,20)))
-    esc(n, 22, vz(c(wsAux,6,20)))
-    esc(n, 23, vz(c(wsAux,7,20)))
-    esc(n, 26, vz(c(wsAux,8,20)))
-    esc(n, 27, vz(c(wsAux,17,20)))
-    esc(n, 28, vz(c(wsAux,19,20)))
-    esc(n, 29, vz(c(wsAux,20,20)))
-    esc(n, 32, vz(c(wsAux,24,20)))
-    esc(n, 33, vz(c(wsAux,18,20)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 27, vz(aux("00000000094802", n)))
+    esc(n, 28, vz(aux("00000000094775", n)))
+    esc(n, 29, vz(aux("00000000094776", n)))
+    esc(n, 32, vz(aux("00000000095151", n)))
+    esc(n, 33, vz(aux("00000000094682", n)))
 
-    # ── CONF 14553 (AUXILIAR col 21) ──────────────────────────────────────────
+    # ── CONF 14553 ────────────────────────────────────────────────────────────
     n = "CONF 14553"
-    esc(n, 20, vz(c(wsAux,2,21))  + vz(c(wsAux,3,21)))
-    esc(n, 21, vz(c(wsAux,4,21))  + vz(c(wsAux,5,21)))
-    esc(n, 22, vz(c(wsAux,6,21)))
-    esc(n, 23, vz(c(wsAux,7,21)))
-    esc(n, 26, vz(c(wsAux,8,21)))
-    esc(n, 33, vz(c(wsAux,18,21)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 33, vz(aux("00000000094682", n)))
 
-    # ── DC 7529 (AUXILIAR col 22) ─────────────────────────────────────────────
+    # ── DC 7529 ───────────────────────────────────────────────────────────────
     n = "DC 7529"
-    esc(n, 20, vz(c(wsAux,2,22))  + vz(c(wsAux,3,22)))
-    esc(n, 21, vz(c(wsAux,4,22))  + vz(c(wsAux,5,22)))
-    esc(n, 22, vz(c(wsAux,6,22)))
-    esc(n, 23, vz(c(wsAux,7,22)))
-    esc(n, 27, vz(c(wsAux,8,22)))
-    esc(n, 46, vz(c(wsAux,24,22)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 46, vz(aux("00000000095151", n)))
 
-    # ── IT 6942 (AUXILIAR col 23) ─────────────────────────────────────────────
+    # ── IT 6942 ───────────────────────────────────────────────────────────────
     n = "IT 6942"
-    esc(n, 20, vz(c(wsAux,2,23))  + vz(c(wsAux,3,23)))
-    esc(n, 21, vz(c(wsAux,4,23))  + vz(c(wsAux,5,23)))
-    esc(n, 22, vz(c(wsAux,6,23)))
-    esc(n, 23, vz(c(wsAux,7,23)))
-    esc(n, 26, vz(c(wsAux,8,23)))
-    esc(n, 27, vz(c(wsAux,10,23)))
-    esc(n, 28, vz(c(wsAux,17,23)))
-    esc(n, 29, vz(c(wsAux,19,23)))
-    esc(n, 30, vz(c(wsAux,20,23)))
-    esc(n, 34, vz(c(wsAux,18,23)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 27, vz(aux("00000000087694", n)))
+    esc(n, 28, vz(aux("00000000094802", n)))
+    esc(n, 29, vz(aux("00000000094775", n)))
+    esc(n, 30, vz(aux("00000000094776", n)))
+    esc(n, 34, vz(aux("00000000094682", n)))
 
-    # ── BR 6954 (AUXILIAR col 24) ─────────────────────────────────────────────
+    # ── BR 6954 ───────────────────────────────────────────────────────────────
     n = "BR 6954"
-    esc(n, 20, vz(c(wsAux,2,24))  + vz(c(wsAux,3,24)))
-    esc(n, 21, vz(c(wsAux,4,24))  + vz(c(wsAux,5,24)))
-    esc(n, 22, vz(c(wsAux,6,24)))
-    esc(n, 23, vz(c(wsAux,7,24)))
-    esc(n, 27, vz(c(wsAux,8,24)))
-    esc(n, 46, vz(c(wsAux,21,24)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 46, vz(aux("00000000094777", n)))
 
-    # ── CDJ 23091 (AUXILIAR VD'S col 9) ──────────────────────────────────────
+    # ── CDJ 23091 ─────────────────────────────────────────────────────────────
     n = "CDJ 23091"
-    esc(n, 14,  vz(c(wsVD,2,9)))
-    esc(n, 15,  vz(c(wsVD,3,9)))
-    esc(n, 16,  vz(c(wsVD,4,9)))
-    esc(n, 19,  vz(c(wsVD,8,9))  + vz(c(wsVD,9,9)))
-    esc(n, 20,  vz(c(wsVD,10,9)))
-    esc(n, 21,  vz(c(wsVD,11,9)) + vz(c(wsVD,12,9)) + vz(c(wsVD,13,9)))
-    esc(n, 24,  vz(c(wsVD,14,9)))
-    esc(n, 25,  vz(c(wsVD,16,9)))
-    esc(n, 26,  vz(c(wsVD,17,9)))
-    esc(n, 30,  vz(c(wsVD,18,9)))
-    esc(n, 33,  vz(c(wsVD,19,9)))
-    esc(n, 34,  vz(c(wsVD,20,9)))
-    esc(n, 35,  vz(c(wsVD,21,9)))
-    esc(n, 39,  vz(c(wsVD,22,9)))
-    esc(n, 40,  vz(c(wsVD,23,9)))
-    esc(n, 41,  vz(c(wsVD,24,9)))
-    esc(n, 47,  vz(c(wsVD,26,9)) + vz(c(wsVD,27,9)) + vz(c(wsVD,28,9)))
-    esc(n, 48,  vz(c(wsVD,30,9)))
-    esc(n, 49,  vz(c(wsVD,29,9)))
-    esc(n, 55,  vz(c(wsVD,33,9)))
-    esc(n, 56,  vz(c(wsVD,34,9)))
-    esc(n, 57,  vz(c(wsVD,35,9)))
-    esc(n, 58,  vz(c(wsVD,36,9)))
-    esc(n, 59,  vz(c(wsVD,37,9)))
-    esc(n, 60,  vz(c(wsVD,38,9)))
-    esc(n, 80,  vz(c(wsVD,53,9)))
-    esc(n, 81,  vz(c(wsVD,54,9)))
-    esc(n, 82,  vz(c(wsVD,55,9)))
-    esc(n, 89,  vz(c(wsVD,58,9)))
-    esc(n, 90,  vz(c(wsVD,59,9)))
-    esc(n, 91,  vz(c(wsVD,60,9)))
-    esc(n, 92,  vz(c(wsVD,61,9)))
-    esc(n, 104, vz(c(wsVD,40,9)))
-    esc(n, 105, vz(c(wsVD,41,9)))
-    esc(n, 106, vz(c(wsVD,42,9)))
-    esc(n, 107, vz(c(wsVD,43,9)))
-    esc(n, 113, vz(c(wsVD,45,9)))
-    esc(n, 114, vz(c(wsVD,46,9)))
-    esc(n, 115, vz(c(wsVD,47,9)))
-    esc(n, 116, vz(c(wsVD,48,9)))
-    esc(n, 117, vz(c(wsVD,49,9)))
-    esc(n, 118, vz(c(wsVD,50,9)))
+    esc(n, 14,  vz(vds("00000000090819", n)))
+    esc(n, 15,  vz(vds("00000000090821", n)))
+    esc(n, 16,  vz(vds("00000000090822", n)))
+    esc(n, 19,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 20,  vz(vds("00000000030190", n)))
+    esc(n, 21,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 24,  vz(vds("00000000089402", n)))
+    esc(n, 25,  vz(vds("00000000089401", n)))
+    esc(n, 26,  vz(vds("00000000003704", n)))
+    esc(n, 30,  vz(vds("00000000054572", n)))
+    esc(n, 33,  vz(vds("00000000046885", n)))
+    esc(n, 34,  vz(vds("00000000046886", n)))
+    esc(n, 35,  vz(vds("00000000046887", n)))
+    esc(n, 39,  vz(vds("00000000046888", n)))
+    esc(n, 40,  vz(vds("00000000046890", n)))
+    esc(n, 41,  vz(vds("00000000046891", n)))
+    esc(n, 47,  vz(vds("00000000050110", n)) + vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 48,  vz(vds("00000000056378", n)))
+    esc(n, 49,  vz(vds("00000000056376", n)))
+    esc(n, 55,  vz(vds("00000000052276", n)))
+    esc(n, 56,  vz(vds("00000000052288", n)))
+    esc(n, 57,  vz(vds("00000000053653", n)))
+    esc(n, 58,  vz(vds("00000000053654", n)))
+    esc(n, 59,  vz(vds("00000000053655", n)))
+    esc(n, 60,  vz(vds("00000000053656", n)))
+    esc(n, 80,  vz(vds("00000000095150", n)))
+    esc(n, 81,  vz(vds("00000000085705", n)))
+    esc(n, 82,  vz(vds("00000000085704", n)))
+    esc(n, 89,  vz(vds("00000000094775", n)))
+    esc(n, 90,  vz(vds("00000000094776", n)))
+    esc(n, 91,  vz(vds("00000000094778", n)))
+    esc(n, 92,  vz(vds("00000000094779", n)))
+    esc(n, 104, vz(vds("00000000094371", n)))
+    esc(n, 105, vz(vds("00000000095162", n)))
+    esc(n, 106, vz(vds("00000000088796", n)))
+    esc(n, 107, vz(vds("00000000088799", n)))
+    esc(n, 113, vz(vds("00000000096443", n)))
+    esc(n, 114, vz(vds("00000000096444", n)))
+    esc(n, 115, vz(vds("00000000097241", n)))
+    esc(n, 116, vz(vds("00000000096437", n)))
+    esc(n, 117, vz(vds("00000000096438", n)))
+    esc(n, 118, vz(vds("00000000096441", n)))
 
-    # ── ERJ 22838 (AUXILIAR VD'S col 10) ─────────────────────────────────────
+    # ── ERJ 22838 ─────────────────────────────────────────────────────────────
     n = "ERJ 22838"
-    esc(n, 22,  vz(c(wsVD,5,10)))
-    esc(n, 23,  vz(c(wsVD,6,10)))
-    esc(n, 24,  vz(c(wsVD,7,10)))
-    esc(n, 27,  vz(c(wsVD,2,10)))
-    esc(n, 28,  vz(c(wsVD,3,10)))
-    esc(n, 29,  vz(c(wsVD,4,10)))
-    esc(n, 32,  vz(c(wsVD,8,10))  + vz(c(wsVD,9,10)))
-    esc(n, 33,  vz(c(wsVD,10,10)))
-    esc(n, 34,  vz(c(wsVD,11,10)) + vz(c(wsVD,12,10)) + vz(c(wsVD,13,10)))
-    esc(n, 37,  vz(c(wsVD,14,10)) + vz(c(wsVD,15,10)))
-    esc(n, 38,  vz(c(wsVD,16,10)))
-    esc(n, 39,  vz(c(wsVD,17,10)))
-    esc(n, 43,  vz(c(wsVD,18,10)))
-    esc(n, 46,  vz(c(wsVD,19,10)))
-    esc(n, 47,  vz(c(wsVD,20,10)))
-    esc(n, 48,  vz(c(wsVD,21,10)))
-    esc(n, 55,  vz(c(wsVD,22,10)))
-    esc(n, 56,  vz(c(wsVD,23,10)))
-    esc(n, 57,  vz(c(wsVD,24,10)))
-    esc(n, 67,  vz(c(wsVD,26,10)) + vz(c(wsVD,27,10)) + vz(c(wsVD,28,10)))
-    esc(n, 68,  vz(c(wsVD,30,10)))
-    esc(n, 69,  vz(c(wsVD,29,10)))
-    esc(n, 78,  vz(c(wsVD,33,10)))
-    esc(n, 79,  vz(c(wsVD,34,10)))
-    esc(n, 80,  vz(c(wsVD,35,10)))
-    esc(n, 81,  vz(c(wsVD,36,10)))
-    esc(n, 82,  vz(c(wsVD,37,10)))
-    esc(n, 83,  vz(c(wsVD,38,10)))
-    esc(n, 88,  vz(c(wsVD,71,10)))
-    esc(n, 92,  vz(c(wsVD,69,10)))
-    esc(n, 93,  vz(c(wsVD,70,10)))
-    esc(n, 96,  vz(c(wsVD,51,10)))
-    esc(n, 97,  vz(c(wsVD,52,10)))
-    esc(n, 98,  vz(c(wsVD,53,10)))
-    esc(n, 99,  vz(c(wsVD,54,10)))
-    esc(n, 100, vz(c(wsVD,55,10)))
-    esc(n, 107, vz(c(wsVD,58,10)))
-    esc(n, 108, vz(c(wsVD,59,10)))
-    esc(n, 109, vz(c(wsVD,60,10)))
-    esc(n, 110, vz(c(wsVD,61,10)))
-    esc(n, 118, vz(c(wsVD,40,10)))
-    esc(n, 119, vz(c(wsVD,41,10)))
-    esc(n, 120, vz(c(wsVD,42,10)))
-    esc(n, 121, vz(c(wsVD,43,10)))
-    esc(n, 127, vz(c(wsVD,44,10)))
-    esc(n, 128, vz(c(wsVD,46,10)))
-    esc(n, 129, vz(c(wsVD,47,10)))
-    esc(n, 130, vz(c(wsVD,48,10)))
-    esc(n, 131, vz(c(wsVD,49,10)))
-    esc(n, 132, vz(c(wsVD,50,10)))
+    esc(n, 22,  vz(vds("00000000003591", n)))
+    esc(n, 23,  vz(vds("00000000003608", n)))
+    esc(n, 24,  vz(vds("00000000003610", n)))
+    esc(n, 27,  vz(vds("00000000090819", n)))
+    esc(n, 28,  vz(vds("00000000090821", n)))
+    esc(n, 29,  vz(vds("00000000090822", n)))
+    esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 33,  vz(vds("00000000030190", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 37,  vz(vds("00000000089402", n)) + vz(vds("00000000003682", n)))
+    esc(n, 38,  vz(vds("00000000089401", n)))
+    esc(n, 39,  vz(vds("00000000003704", n)))
+    esc(n, 43,  vz(vds("00000000054572", n)))
+    esc(n, 46,  vz(vds("00000000046885", n)))
+    esc(n, 47,  vz(vds("00000000046886", n)))
+    esc(n, 48,  vz(vds("00000000046887", n)))
+    esc(n, 55,  vz(vds("00000000046888", n)))
+    esc(n, 56,  vz(vds("00000000046890", n)))
+    esc(n, 57,  vz(vds("00000000046891", n)))
+    esc(n, 67,  vz(vds("00000000050110", n)) + vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 68,  vz(vds("00000000056378", n)))
+    esc(n, 69,  vz(vds("00000000056376", n)))
+    esc(n, 78,  vz(vds("00000000052276", n)))
+    esc(n, 79,  vz(vds("00000000052288", n)))
+    esc(n, 80,  vz(vds("00000000053653", n)))
+    esc(n, 81,  vz(vds("00000000053654", n)))
+    esc(n, 82,  vz(vds("00000000053655", n)))
+    esc(n, 83,  vz(vds("00000000053656", n)))
+    esc(n, 88,  vz(vds("00000000090451", n)))
+    esc(n, 92,  vz(vds("00000000089713", n)))
+    esc(n, 93,  vz(vds("00000000087694", n)))
+    esc(n, 96,  vz(vds("00000000085706", n)))
+    esc(n, 97,  vz(vds("00000000094959", n)))
+    esc(n, 98,  vz(vds("00000000095150", n)))
+    esc(n, 99,  vz(vds("00000000085705", n)))
+    esc(n, 100, vz(vds("00000000085704", n)))
+    esc(n, 107, vz(vds("00000000094775", n)))
+    esc(n, 108, vz(vds("00000000094776", n)))
+    esc(n, 109, vz(vds("00000000094778", n)))
+    esc(n, 110, vz(vds("00000000094779", n)))
+    esc(n, 118, vz(vds("00000000094371", n)))
+    esc(n, 119, vz(vds("00000000095162", n)))
+    esc(n, 120, vz(vds("00000000088796", n)))
+    esc(n, 121, vz(vds("00000000088799", n)))
+    esc(n, 127, vz(vds("00000000096442", n)))
+    esc(n, 128, vz(vds("00000000096444", n)))
+    esc(n, 129, vz(vds("00000000097241", n)))
+    esc(n, 130, vz(vds("00000000096437", n)))
+    esc(n, 131, vz(vds("00000000096438", n)))
+    esc(n, 132, vz(vds("00000000096441", n)))
 
-    # ── ER SM 24137 (AUXILIAR VD'S col 11) ───────────────────────────────────
+    # ── ER SM 24137 ───────────────────────────────────────────────────────────
     n = "ER SM 24137"
-    esc(n, 22,  vz(c(wsVD,2,11)))
-    esc(n, 23,  vz(c(wsVD,3,11)))
-    esc(n, 24,  vz(c(wsVD,4,11)))
-    esc(n, 27,  vz(c(wsVD,8,11))  + vz(c(wsVD,9,11)))
-    esc(n, 28,  vz(c(wsVD,10,11)))
-    esc(n, 29,  vz(c(wsVD,11,11)) + vz(c(wsVD,12,11)) + vz(c(wsVD,13,11)) + vz(c(wsVD,14,11)))
-    esc(n, 32,  vz(c(wsVD,15,11)) + vz(c(wsVD,16,11)))
-    esc(n, 33,  vz(c(wsVD,16,11)))  # VD row 16 usado novamente — replicado do VBA
-    esc(n, 34,  vz(c(wsVD,17,11)))
-    esc(n, 41,  vz(c(wsVD,19,11)))
-    esc(n, 42,  vz(c(wsVD,20,11)))
-    esc(n, 43,  vz(c(wsVD,21,11)))
-    esc(n, 50,  vz(c(wsVD,22,11)))
-    esc(n, 51,  vz(c(wsVD,23,11)))
-    esc(n, 52,  vz(c(wsVD,24,11)))
-    esc(n, 62,  vz(c(wsVD,27,11)) + vz(c(wsVD,28,11)) + vz(c(wsVD,29,11)))
-    esc(n, 63,  vz(c(wsVD,30,11)))
-    esc(n, 64,  vz(c(wsVD,29,11)))  # VD row 29 usado novamente — replicado do VBA
-    esc(n, 73,  vz(c(wsVD,33,11)))
-    esc(n, 74,  vz(c(wsVD,34,11)))
-    esc(n, 75,  vz(c(wsVD,35,11)))
-    esc(n, 76,  vz(c(wsVD,36,11)))
-    esc(n, 77,  vz(c(wsVD,37,11)))
-    esc(n, 78,  vz(c(wsVD,38,11)))
-    esc(n, 81,  vz(c(wsVD,51,11)))
-    esc(n, 82,  vz(c(wsVD,52,11)))
-    esc(n, 83,  vz(c(wsVD,53,11)))
-    esc(n, 84,  vz(c(wsVD,54,11)))
-    esc(n, 85,  vz(c(wsVD,55,11)))
-    esc(n, 92,  vz(c(wsVD,58,11)))
-    esc(n, 93,  vz(c(wsVD,59,11)))
-    esc(n, 94,  vz(c(wsVD,60,11)))
-    esc(n, 95,  vz(c(wsVD,61,11)))
-    esc(n, 100, vz(c(wsVD,71,11)))
-    esc(n, 108, vz(c(wsVD,40,11)))
-    esc(n, 109, vz(c(wsVD,41,11)))
-    esc(n, 110, vz(c(wsVD,42,11)))
-    esc(n, 111, vz(c(wsVD,43,11)))
-    esc(n, 117, vz(c(wsVD,45,11)))
-    esc(n, 118, vz(c(wsVD,46,11)))
-    esc(n, 119, vz(c(wsVD,47,11)))
-    esc(n, 120, vz(c(wsVD,48,11)))
-    esc(n, 121, vz(c(wsVD,49,11)))
-    esc(n, 122, vz(c(wsVD,50,11)))
-    esc(n, 125, vz(c(wsVD,70,11)))
+    esc(n, 22,  vz(vds("00000000090819", n)))
+    esc(n, 23,  vz(vds("00000000090821", n)))
+    esc(n, 24,  vz(vds("00000000090822", n)))
+    esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 28,  vz(vds("00000000030190", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 32,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
+    esc(n, 33,  vz(vds("00000000089401", n)))  # VD row 16 usado novamente — replicado do VBA
+    esc(n, 34,  vz(vds("00000000003704", n)))
+    esc(n, 41,  vz(vds("00000000046885", n)))
+    esc(n, 42,  vz(vds("00000000046886", n)))
+    esc(n, 43,  vz(vds("00000000046887", n)))
+    esc(n, 50,  vz(vds("00000000046888", n)))
+    esc(n, 51,  vz(vds("00000000046890", n)))
+    esc(n, 52,  vz(vds("00000000046891", n)))
+    esc(n, 62,  vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)) + vz(vds("00000000056376", n)))
+    esc(n, 63,  vz(vds("00000000056378", n)))
+    esc(n, 64,  vz(vds("00000000056376", n)))  # VD row 29 usado novamente — replicado do VBA
+    esc(n, 73,  vz(vds("00000000052276", n)))
+    esc(n, 74,  vz(vds("00000000052288", n)))
+    esc(n, 75,  vz(vds("00000000053653", n)))
+    esc(n, 76,  vz(vds("00000000053654", n)))
+    esc(n, 77,  vz(vds("00000000053655", n)))
+    esc(n, 78,  vz(vds("00000000053656", n)))
+    esc(n, 81,  vz(vds("00000000085706", n)))
+    esc(n, 82,  vz(vds("00000000094959", n)))
+    esc(n, 83,  vz(vds("00000000095150", n)))
+    esc(n, 84,  vz(vds("00000000085705", n)))
+    esc(n, 85,  vz(vds("00000000085704", n)))
+    esc(n, 92,  vz(vds("00000000094775", n)))
+    esc(n, 93,  vz(vds("00000000094776", n)))
+    esc(n, 94,  vz(vds("00000000094778", n)))
+    esc(n, 95,  vz(vds("00000000094779", n)))
+    esc(n, 100, vz(vds("00000000090451", n)))
+    esc(n, 108, vz(vds("00000000094371", n)))
+    esc(n, 109, vz(vds("00000000095162", n)))
+    esc(n, 110, vz(vds("00000000088796", n)))
+    esc(n, 111, vz(vds("00000000088799", n)))
+    esc(n, 117, vz(vds("00000000096443", n)))
+    esc(n, 118, vz(vds("00000000096444", n)))
+    esc(n, 119, vz(vds("00000000097241", n)))
+    esc(n, 120, vz(vds("00000000096437", n)))
+    esc(n, 121, vz(vds("00000000096438", n)))
+    esc(n, 122, vz(vds("00000000096441", n)))
+    esc(n, 125, vz(vds("00000000087694", n)))
 
     return contagem
 
@@ -853,21 +943,27 @@ def preencher_jau(
 
 def preencher_bauru(
     wb,
-    wsAux,
-    wsVD,
+    leitor_aux: "LeitorAuxiliar",
+    leitor_vds: "LeitorAuxiliar",
     col_novas: Dict[str, int],
     dry_run: bool,
     logger: logging.Logger,
 ) -> Dict[str, int]:
     """
     Escreve valores nas abas da Planilha Bauru lendo de AUXILIAR e AUXILIAR VD'S.
+    Acesso via código de produto + código de loja (imune a inserção/reordenação
+    de linhas/colunas nas auxiliares).
     Retorna {nome_aba: quantidade_de_valores_escritos}.
     """
     contagem: Dict[str, int] = {}
     _warned: set = set()
 
-    def c(ws_src, r: int, col: int):
-        return ws_src.cell(row=r, column=col).value
+    # Acessores curtos para legibilidade
+    def aux(cod_prod: str, nome_aba: str):
+        return leitor_aux.get(cod_prod, nome_aba)
+
+    def vds(cod_prod: str, nome_aba: str):
+        return leitor_vds.get(cod_prod, nome_aba)
 
     def esc(nome_aba: str, linha: int, valor: float) -> None:
         if nome_aba not in col_novas:
@@ -882,183 +978,183 @@ def preencher_bauru(
             wb[nome_aba].cell(row=linha, column=col_novas[nome_aba]).value = valor
         contagem[nome_aba] = contagem.get(nome_aba, 0) + 1
 
-    # ── BSH 6700 (AUXILIAR col 8) ─────────────────────────────────────────────
+    # ── BSH 6700 ──────────────────────────────────────────────────────────────
     n = "BSH 6700"
-    esc(n, 20, vz(c(wsAux,2,8))  + vz(c(wsAux,3,8)))
-    esc(n, 21, vz(c(wsAux,4,8))  + vz(c(wsAux,5,8)))
-    esc(n, 22, vz(c(wsAux,6,8)))
-    esc(n, 23, vz(c(wsAux,7,8)))
-    esc(n, 27, vz(c(wsAux,8,8)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
 
-    # ── BOUL 13868 (AUXILIAR col 9) ───────────────────────────────────────────
+    # ── BOUL 13868 ────────────────────────────────────────────────────────────
     n = "BOUL 13868"
-    esc(n, 20, vz(c(wsAux,2,9))  + vz(c(wsAux,3,9)))
-    esc(n, 21, vz(c(wsAux,4,9))  + vz(c(wsAux,5,9)))
-    esc(n, 22, vz(c(wsAux,6,9)))
-    esc(n, 23, vz(c(wsAux,7,9)))
-    esc(n, 27, vz(c(wsAux,8,9)))
-    esc(n, 48, vz(c(wsAux,20,9)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 48, vz(aux("00000000094776", n)))
 
-    # ── TT 13370 (AUXILIAR col 10) ────────────────────────────────────────────
+    # ── TT 13370 ──────────────────────────────────────────────────────────────
     n = "TT 13370"
-    esc(n, 20, vz(c(wsAux,2,10)) + vz(c(wsAux,3,10)))
-    esc(n, 21, vz(c(wsAux,4,10)) + vz(c(wsAux,5,10)))
-    esc(n, 22, vz(c(wsAux,6,10)))
-    esc(n, 23, vz(c(wsAux,7,10)))
-    esc(n, 27, vz(c(wsAux,8,10)))
-    esc(n, 46, vz(c(wsAux,19,10)))
-    esc(n, 47, vz(c(wsAux,20,10)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 46, vz(aux("00000000094775", n)))
+    esc(n, 47, vz(aux("00000000094776", n)))
 
-    # ── TDQ 20000 (AUXILIAR col 11) ───────────────────────────────────────────
+    # ── TDQ 20000 ─────────────────────────────────────────────────────────────
     n = "TDQ 20000"
-    esc(n, 20, vz(c(wsAux,2,11)) + vz(c(wsAux,3,11)))
-    esc(n, 21, vz(c(wsAux,4,11)) + vz(c(wsAux,5,11)))
-    esc(n, 22, vz(c(wsAux,6,11)))
-    esc(n, 23, vz(c(wsAux,7,11)))
-    esc(n, 27, vz(c(wsAux,8,11)))
-    esc(n, 47, vz(c(wsAux,23,11)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 47, vz(aux("00000000094779", n)))
 
-    # ── GET 23049 (AUXILIAR col 12) ───────────────────────────────────────────
+    # ── GET 23049 ─────────────────────────────────────────────────────────────
     n = "GET 23049"
-    esc(n, 20, vz(c(wsAux,2,12)) + vz(c(wsAux,3,12)))
-    esc(n, 21, vz(c(wsAux,4,12)) + vz(c(wsAux,5,12)))
-    esc(n, 22, vz(c(wsAux,6,12)))
-    esc(n, 23, vz(c(wsAux,7,12)))
-    esc(n, 26, vz(c(wsAux,8,12)))
-    esc(n, 32, vz(c(wsAux,9,12)))
-    esc(n, 33, vz(c(wsAux,10,12)))
-    esc(n, 46, vz(c(wsAux,22,12)))
-    esc(n, 47, vz(c(wsAux,23,12)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 26, vz(aux("00000000086027", n)))
+    esc(n, 32, vz(aux("00000000087691", n)))
+    esc(n, 33, vz(aux("00000000087694", n)))
+    esc(n, 46, vz(aux("00000000094778", n)))
+    esc(n, 47, vz(aux("00000000094779", n)))
 
-    # ── Q7 6727 (AUXILIAR col 13) ─────────────────────────────────────────────
+    # ── Q7 6727 ───────────────────────────────────────────────────────────────
     n = "Q7 6727"
-    esc(n, 20, vz(c(wsAux,2,13)) + vz(c(wsAux,3,13)))
-    esc(n, 21, vz(c(wsAux,4,13)) + vz(c(wsAux,5,13)))
-    esc(n, 22, vz(c(wsAux,6,13)))
-    esc(n, 23, vz(c(wsAux,7,13)))
-    esc(n, 27, vz(c(wsAux,8,13)))
-    esc(n, 33, vz(c(wsAux,9,13)))
-    esc(n, 34, vz(c(wsAux,10,13)))
-    esc(n, 44, vz(c(wsAux,19,13)))
-    esc(n, 48, vz(c(wsAux,24,13)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 33, vz(aux("00000000087691", n)))
+    esc(n, 34, vz(aux("00000000087694", n)))
+    esc(n, 44, vz(aux("00000000094775", n)))
+    esc(n, 48, vz(aux("00000000095151", n)))
 
-    # ── Q2 12466 (AUXILIAR col 14) ────────────────────────────────────────────
+    # ── Q2 12466 ──────────────────────────────────────────────────────────────
     n = "Q2 12466"
-    esc(n, 20, vz(c(wsAux,2,14)) + vz(c(wsAux,3,14)))
-    esc(n, 21, vz(c(wsAux,4,14)) + vz(c(wsAux,5,14)))
-    esc(n, 22, vz(c(wsAux,6,14)))
-    esc(n, 23, vz(c(wsAux,7,14)))
-    esc(n, 27, vz(c(wsAux,8,14)))
-    esc(n, 33, vz(c(wsAux,9,14)))
-    esc(n, 34, vz(c(wsAux,10,14)))
-    esc(n, 47, vz(c(wsAux,23,14)))
-    esc(n, 48, vz(c(wsAux,24,14)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 33, vz(aux("00000000087691", n)))
+    esc(n, 34, vz(aux("00000000087694", n)))
+    esc(n, 47, vz(aux("00000000094779", n)))
+    esc(n, 48, vz(aux("00000000095151", n)))
 
-    # ── MD 12942 (AUXILIAR col 15) ────────────────────────────────────────────
+    # ── MD 12942 ──────────────────────────────────────────────────────────────
     n = "MD 12942"
-    esc(n, 20, vz(c(wsAux,2,15)) + vz(c(wsAux,3,15)))
-    esc(n, 21, vz(c(wsAux,4,15)) + vz(c(wsAux,5,15)))
-    esc(n, 22, vz(c(wsAux,6,15)))
-    esc(n, 23, vz(c(wsAux,7,15)))
-    esc(n, 27, vz(c(wsAux,8,15)))
-    esc(n, 33, vz(c(wsAux,9,15)))
-    esc(n, 47, vz(c(wsAux,20,15)))
+    esc(n, 20, vz(aux("00000000089402", n)) + vz(aux("00000000003517", n)))
+    esc(n, 21, vz(aux("00000000089401", n)) + vz(aux("00000000003530", n)))
+    esc(n, 22, vz(aux("00000000003554", n)))
+    esc(n, 23, vz(aux("00000000089400", n)))
+    esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 33, vz(aux("00000000087691", n)))
+    esc(n, 47, vz(aux("00000000094776", n)))
 
-    # ── CDB - 23280 (AUXILIAR VD'S col 7) ────────────────────────────────────
+    # ── CDB - 23280 ───────────────────────────────────────────────────────────
     n = "CDB - 23280"
-    esc(n, 16,  vz(c(wsVD,2,7)))
-    esc(n, 17,  vz(c(wsVD,3,7)))
-    esc(n, 18,  vz(c(wsVD,4,7)))
-    esc(n, 21,  vz(c(wsVD,8,7))  + vz(c(wsVD,9,7)))
-    esc(n, 22,  vz(c(wsVD,10,7)))
-    esc(n, 23,  vz(c(wsVD,11,7)) + vz(c(wsVD,12,7)) + vz(c(wsVD,13,7)))
-    esc(n, 25,  vz(c(wsVD,17,7)))  # mesmo valor da linha 28 — replicado do VBA
-    esc(n, 26,  vz(c(wsVD,14,7)))
-    esc(n, 27,  vz(c(wsVD,16,7)))
-    esc(n, 28,  vz(c(wsVD,17,7)))
-    esc(n, 33,  vz(c(wsVD,18,7)))
-    esc(n, 36,  vz(c(wsVD,19,7)))
-    esc(n, 37,  vz(c(wsVD,20,7)))
-    esc(n, 38,  vz(c(wsVD,21,7)))
-    esc(n, 42,  vz(c(wsVD,22,7)))
-    esc(n, 43,  vz(c(wsVD,23,7)))
-    esc(n, 44,  vz(c(wsVD,24,7)))
-    esc(n, 50,  vz(c(wsVD,26,7)) + vz(c(wsVD,27,7)) + vz(c(wsVD,28,7)))
-    esc(n, 51,  vz(c(wsVD,30,7)))
-    esc(n, 52,  vz(c(wsVD,29,7)))
-    esc(n, 58,  vz(c(wsVD,33,7)))
-    esc(n, 59,  vz(c(wsVD,34,7)))
-    esc(n, 60,  vz(c(wsVD,35,7)))
-    esc(n, 61,  vz(c(wsVD,36,7)))
-    esc(n, 62,  vz(c(wsVD,37,7)))
-    esc(n, 63,  vz(c(wsVD,38,7)))
-    esc(n, 73,  vz(c(wsVD,71,7)))
-    esc(n, 76,  vz(c(wsVD,69,7)))
-    esc(n, 78,  vz(c(wsVD,70,7)))
-    esc(n, 81,  vz(c(wsVD,51,7)))
-    esc(n, 82,  vz(c(wsVD,52,7)))
-    esc(n, 83,  vz(c(wsVD,53,7)))
-    esc(n, 84,  vz(c(wsVD,54,7)))
-    esc(n, 85,  vz(c(wsVD,55,7)))
-    esc(n, 88,  vz(c(wsVD,56,7)))
-    esc(n, 89,  vz(c(wsVD,57,7)))
-    esc(n, 92,  vz(c(wsVD,58,7)))
-    esc(n, 93,  vz(c(wsVD,59,7)))
-    esc(n, 94,  vz(c(wsVD,60,7)))
-    esc(n, 95,  vz(c(wsVD,61,7)))
-    esc(n, 107, vz(c(wsVD,40,7)))
-    esc(n, 108, vz(c(wsVD,41,7)))
-    esc(n, 109, vz(c(wsVD,42,7)))
-    esc(n, 110, vz(c(wsVD,43,7)))
-    esc(n, 116, vz(c(wsVD,44,7)))
-    esc(n, 117, vz(c(wsVD,45,7)))
-    esc(n, 118, vz(c(wsVD,47,7)))
-    esc(n, 119, vz(c(wsVD,48,7)))
-    esc(n, 120, vz(c(wsVD,49,7)))
-    esc(n, 121, vz(c(wsVD,50,7)))
+    esc(n, 16,  vz(vds("00000000090819", n)))
+    esc(n, 17,  vz(vds("00000000090821", n)))
+    esc(n, 18,  vz(vds("00000000090822", n)))
+    esc(n, 21,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 22,  vz(vds("00000000030190", n)))
+    esc(n, 23,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 25,  vz(vds("00000000003704", n)))  # mesmo valor da linha 28 — replicado do VBA
+    esc(n, 26,  vz(vds("00000000089402", n)))
+    esc(n, 27,  vz(vds("00000000089401", n)))
+    esc(n, 28,  vz(vds("00000000003704", n)))
+    esc(n, 33,  vz(vds("00000000054572", n)))
+    esc(n, 36,  vz(vds("00000000046885", n)))
+    esc(n, 37,  vz(vds("00000000046886", n)))
+    esc(n, 38,  vz(vds("00000000046887", n)))
+    esc(n, 42,  vz(vds("00000000046888", n)))
+    esc(n, 43,  vz(vds("00000000046890", n)))
+    esc(n, 44,  vz(vds("00000000046891", n)))
+    esc(n, 50,  vz(vds("00000000050110", n)) + vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 51,  vz(vds("00000000056378", n)))
+    esc(n, 52,  vz(vds("00000000056376", n)))
+    esc(n, 58,  vz(vds("00000000052276", n)))
+    esc(n, 59,  vz(vds("00000000052288", n)))
+    esc(n, 60,  vz(vds("00000000053653", n)))
+    esc(n, 61,  vz(vds("00000000053654", n)))
+    esc(n, 62,  vz(vds("00000000053655", n)))
+    esc(n, 63,  vz(vds("00000000053656", n)))
+    esc(n, 73,  vz(vds("00000000090451", n)))
+    esc(n, 76,  vz(vds("00000000089713", n)))
+    esc(n, 78,  vz(vds("00000000087694", n)))
+    esc(n, 81,  vz(vds("00000000085706", n)))
+    esc(n, 82,  vz(vds("00000000094959", n)))
+    esc(n, 83,  vz(vds("00000000095150", n)))
+    esc(n, 84,  vz(vds("00000000085705", n)))
+    esc(n, 85,  vz(vds("00000000085704", n)))
+    esc(n, 88,  vz(vds("00000000094783", n)))
+    esc(n, 89,  vz(vds("00000000094781", n)))
+    esc(n, 92,  vz(vds("00000000094775", n)))
+    esc(n, 93,  vz(vds("00000000094776", n)))
+    esc(n, 94,  vz(vds("00000000094778", n)))
+    esc(n, 95,  vz(vds("00000000094779", n)))
+    esc(n, 107, vz(vds("00000000094371", n)))
+    esc(n, 108, vz(vds("00000000095162", n)))
+    esc(n, 109, vz(vds("00000000088796", n)))
+    esc(n, 110, vz(vds("00000000088799", n)))
+    esc(n, 116, vz(vds("00000000096442", n)))
+    esc(n, 117, vz(vds("00000000096443", n)))
+    esc(n, 118, vz(vds("00000000097241", n)))
+    esc(n, 119, vz(vds("00000000096437", n)))
+    esc(n, 120, vz(vds("00000000096438", n)))
+    esc(n, 121, vz(vds("00000000096441", n)))
 
-    # ── ERB - 22851 (AUXILIAR VD'S col 8) ────────────────────────────────────
+    # ── ERB - 22851 ───────────────────────────────────────────────────────────
     n = "ERB - 22851"
-    esc(n, 22,  vz(c(wsVD,2,8)))
-    esc(n, 23,  vz(c(wsVD,3,8)))
-    esc(n, 24,  vz(c(wsVD,4,8)))
-    esc(n, 27,  vz(c(wsVD,8,8))  + vz(c(wsVD,9,8)))
-    esc(n, 28,  vz(c(wsVD,10,8)))
-    esc(n, 29,  vz(c(wsVD,11,8)) + vz(c(wsVD,12,8)) + vz(c(wsVD,13,8)))
-    esc(n, 32,  vz(c(wsVD,14,8)))
-    esc(n, 33,  vz(c(wsVD,16,8)))
-    esc(n, 34,  vz(c(wsVD,17,8)))
-    esc(n, 41,  vz(c(wsVD,19,8)))
-    esc(n, 42,  vz(c(wsVD,20,8)))
-    esc(n, 43,  vz(c(wsVD,21,8)))
-    esc(n, 50,  vz(c(wsVD,22,8)))
-    esc(n, 51,  vz(c(wsVD,23,8)))
-    esc(n, 52,  vz(c(wsVD,24,8)))
-    esc(n, 62,  vz(c(wsVD,26,8)) + vz(c(wsVD,27,8)) + vz(c(wsVD,28,8)))
-    esc(n, 63,  vz(c(wsVD,30,8)))
-    esc(n, 64,  vz(c(wsVD,29,8)))
-    esc(n, 73,  vz(c(wsVD,33,8)))
-    esc(n, 74,  vz(c(wsVD,34,8)))
-    esc(n, 75,  vz(c(wsVD,35,8)))
-    esc(n, 76,  vz(c(wsVD,36,8)))
-    esc(n, 77,  vz(c(wsVD,37,8)))
-    esc(n, 78,  vz(c(wsVD,38,8)))
-    esc(n, 83,  vz(c(wsVD,71,8)))
-    esc(n, 88,  vz(c(wsVD,70,8)))
-    esc(n, 93,  vz(c(wsVD,53,8)))
-    esc(n, 94,  vz(c(wsVD,54,8)))
-    esc(n, 95,  vz(c(wsVD,55,8)))
-    esc(n, 102, vz(c(wsVD,58,8)))
-    esc(n, 117, vz(c(wsVD,40,8)))
-    esc(n, 118, vz(c(wsVD,41,8)))
-    esc(n, 119, vz(c(wsVD,42,8)))
-    esc(n, 120, vz(c(wsVD,43,8)))
-    esc(n, 126, vz(c(wsVD,44,8)))
-    esc(n, 127, vz(c(wsVD,45,8)))
-    esc(n, 128, vz(c(wsVD,46,8)))
-    esc(n, 129, vz(c(wsVD,48,8)))
-    esc(n, 130, vz(c(wsVD,49,8)))
-    esc(n, 131, vz(c(wsVD,50,8)))
+    esc(n, 22,  vz(vds("00000000090819", n)))
+    esc(n, 23,  vz(vds("00000000090821", n)))
+    esc(n, 24,  vz(vds("00000000090822", n)))
+    esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
+    esc(n, 28,  vz(vds("00000000030190", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 32,  vz(vds("00000000089402", n)))
+    esc(n, 33,  vz(vds("00000000089401", n)))
+    esc(n, 34,  vz(vds("00000000003704", n)))
+    esc(n, 41,  vz(vds("00000000046885", n)))
+    esc(n, 42,  vz(vds("00000000046886", n)))
+    esc(n, 43,  vz(vds("00000000046887", n)))
+    esc(n, 50,  vz(vds("00000000046888", n)))
+    esc(n, 51,  vz(vds("00000000046890", n)))
+    esc(n, 52,  vz(vds("00000000046891", n)))
+    esc(n, 62,  vz(vds("00000000050110", n)) + vz(vds("00000000056369", n)) + vz(vds("00000000056375", n)))
+    esc(n, 63,  vz(vds("00000000056378", n)))
+    esc(n, 64,  vz(vds("00000000056376", n)))
+    esc(n, 73,  vz(vds("00000000052276", n)))
+    esc(n, 74,  vz(vds("00000000052288", n)))
+    esc(n, 75,  vz(vds("00000000053653", n)))
+    esc(n, 76,  vz(vds("00000000053654", n)))
+    esc(n, 77,  vz(vds("00000000053655", n)))
+    esc(n, 78,  vz(vds("00000000053656", n)))
+    esc(n, 83,  vz(vds("00000000090451", n)))
+    esc(n, 88,  vz(vds("00000000087694", n)))
+    esc(n, 93,  vz(vds("00000000095150", n)))
+    esc(n, 94,  vz(vds("00000000085705", n)))
+    esc(n, 95,  vz(vds("00000000085704", n)))
+    esc(n, 102, vz(vds("00000000094775", n)))
+    esc(n, 117, vz(vds("00000000094371", n)))
+    esc(n, 118, vz(vds("00000000095162", n)))
+    esc(n, 119, vz(vds("00000000088796", n)))
+    esc(n, 120, vz(vds("00000000088799", n)))
+    esc(n, 126, vz(vds("00000000096442", n)))
+    esc(n, 127, vz(vds("00000000096443", n)))
+    esc(n, 128, vz(vds("00000000096444", n)))
+    esc(n, 129, vz(vds("00000000096437", n)))
+    esc(n, 130, vz(vds("00000000096438", n)))
+    esc(n, 131, vz(vds("00000000096441", n)))
 
     return contagem
 
@@ -1270,8 +1366,8 @@ def avancar_referencias_lojas(
 def processar_planilha(
     regiao: str,
     caminho_xlsm: Path,
-    wsAux,
-    wsVD,
+    leitor_aux: "LeitorAuxiliar",
+    leitor_vds: "LeitorAuxiliar",
     preencher_fn: Callable,
     dry_run: bool,
     logger: logging.Logger,
@@ -1316,7 +1412,7 @@ def processar_planilha(
         inserir_coluna_novo_pedido(ws, dry_run, logger, nome_aba)
 
     # Preencher valores das lojas
-    contagem = preencher_fn(wb, wsAux, wsVD, col_novas, dry_run, logger)
+    contagem = preencher_fn(wb, leitor_aux, leitor_vds, col_novas, dry_run, logger)
 
     # Exibir resultado por loja
     for nome_aba, n_vals in contagem.items():
@@ -1452,6 +1548,14 @@ def main() -> None:
     except Exception as exc:
         sys.exit(f"ERRO ao abrir AUXILIAR_VDS.xlsx: {exc}")
 
+    # Construir leitores indexados uma única vez (compartilhados entre todas as regiões)
+    leitor_aux = LeitorAuxiliar(wsAux, "AUXILIAR")
+    leitor_vds = LeitorAuxiliar(wsVD, "AUXILIAR_VDS")
+    logger.info("AUXILIAR indexado: %d produtos, %d lojas",
+                len(leitor_aux.produtos), len(leitor_aux.lojas))
+    logger.info("AUXILIAR_VDS indexado: %d produtos, %d lojas",
+                len(leitor_vds.produtos), len(leitor_vds.lojas))
+
     # Mapa de regiões
     regioes = {
         "praia": (resolve(cfg["planilhas_pai"]["praia"]), preencher_praia),
@@ -1463,7 +1567,20 @@ def main() -> None:
 
     for regiao in alvo:
         caminho, preencher_fn = regioes[regiao]
-        processar_planilha(regiao, caminho, wsAux, wsVD, preencher_fn, args.dry_run, logger)
+        processar_planilha(regiao, caminho, leitor_aux, leitor_vds,
+                           preencher_fn, args.dry_run, logger)
+
+    # Avisos finais — produtos/lojas não encontrados nas auxiliares
+    todas_faltantes = sorted(leitor_aux.faltantes | leitor_vds.faltantes)
+    if todas_faltantes:
+        print()
+        print("=" * 60)
+        print(f"  AVISOS — {len(todas_faltantes)} item(s) não encontrado(s) nas auxiliares")
+        print("  (escrito 0 nessas células; revise as planilhas auxiliares)")
+        print("=" * 60)
+        for f in todas_faltantes:
+            print(f"  - {f}")
+            logger.warning(f)
 
     print("\n   Processo 1 concluído com sucesso.")
     print("=" * 60)
