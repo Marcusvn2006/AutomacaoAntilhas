@@ -1,0 +1,20 @@
+# Processo 1 — Configuração de caminhos
+# Copie este arquivo para config_p1.yaml e preencha com os dados reais.
+# Todos os caminhos são relativos ao diretório do script (antilhas/)
+
+dirs:
+  backup: 01_BACKUP
+  logs:   02_LOGS
+
+planilhas_pai:
+  praia: "04_PLANILHAS_PAI/REGIAO_A - Contagem - 2026.xlsm"
+  jau:   "04_PLANILHAS_PAI/REGIAO_B - Contagem - 2026.xlsm"
+  bauru: "04_PLANILHAS_PAI/REGIAO_C - Contagem - 2026.xlsm"
+
+auxiliar:
+  path: 00_ENTRADA/AUXILIAR.xlsx
+  aba:  AUXILIAR
+
+auxiliar_vds:
+  path: 00_ENTRADA/AUXILIAR_VDS.xlsx
+  aba:  "AUXILIAR VD'S"

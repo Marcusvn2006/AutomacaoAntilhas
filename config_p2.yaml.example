@@ -1,0 +1,86 @@
+# config_p2.yaml.example — Processo 2: Integração de planilhas das lojas
+# Copie este arquivo para config_p2.yaml e preencha com os dados reais.
+# Os caminhos são relativos ao diretório do script (antilhas/)
+
+# Pasta raiz das planilhas enviadas pelas gerentes
+dir_entrada: "00_ENTRADA/AUXILIAR_EMAIL"
+
+# Aba dentro do arquivo .xlsm/.xlsx que a gerente envia (igual para todas as lojas)
+aba_loja: "CONTAGEM Semanal"
+
+# Diretórios compartilhados com o Processo 1
+dirs:
+  backup: "01_BACKUP"
+  logs:   "02_LOGS"
+
+# Caminhos das planilhas pai (mesmos do Processo 1)
+planilhas_pai:
+  regiao_a: "04_PLANILHAS_PAI/REGIAO_A - Contagem - 2026.xlsm"
+  regiao_b: "04_PLANILHAS_PAI/REGIAO_B - Contagem - 2026.xlsm"
+  regiao_c: "04_PLANILHAS_PAI/REGIAO_C - Contagem - 2026.xlsm"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Template padrão de destinos
+# Todas as lojas "comuns" compartilham EXATAMENTE este mapeamento.
+# ─────────────────────────────────────────────────────────────────────────────
+_template_padrao: &PADRAO
+  destinos:
+    # ── SACOLAS (sem conversão PCT) ──
+    F5:  { linha: 8,  usou: 1 }
+    F6:  { linha: 9,  usou: 1 }
+    F7:  { linha: 10, usou: 1 }
+    F8:  { linha: 11, usou: 1 }
+    # ── DIVERSOS (com conversão PCT) ──
+    D11: { linha: 14, usou: 1, pct_de: B11 }
+    D12: { linha: 15, usou: 1, pct_de: B12 }
+    # ── CAMPANHA 2026 ──
+    M11: { linha: 9,  usou: 2 }
+    M12: { linha: 10, usou: 2 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mapeamento por loja: chave = nome do arquivo (sem extensão, case-insensitive)
+# ─────────────────────────────────────────────────────────────────────────────
+lojas:
+
+  # ── REGIÃO C ──────────────────────────────────────────────────────────────
+  LOJA1: { aba_pai: "LOJA1 0000", regiao: regiao_c, <<: *PADRAO }
+  LOJA2: { aba_pai: "LOJA2 0000", regiao: regiao_c, <<: *PADRAO }
+
+  # ── REGIÃO B ──────────────────────────────────────────────────────────────
+  LOJA3: { aba_pai: "LOJA3 0000", regiao: regiao_b, <<: *PADRAO }
+  LOJA4: { aba_pai: "LOJA4 0000", regiao: regiao_b, <<: *PADRAO }
+
+  # ── REGIÃO A ──────────────────────────────────────────────────────────────
+  LOJA5: { aba_pai: "LOJA5 0000", regiao: regiao_a, <<: *PADRAO }
+  LOJA6: { aba_pai: "LOJA6 0000", regiao: regiao_a, <<: *PADRAO }
+
+  # ── LOJAS CD/ER (mapeamento próprio) ──────────────────────────────────────
+  CD1:
+    aba_pai: "CD1 0000"
+    regiao:  regiao_b
+    destinos:
+      F5:  { linha: 8,  usou: 1 }
+      F6:  { linha: 9,  usou: 1 }
+      F22: { linha: 36, usou: 1 }
+      M5:  { linha: 52, usou: 1, ignorar_zerado: true }
+      M17: { linha: 101, usou: 1, ignorar_zerado: true }
+      M18: { linha: 103, usou: 1, pct_de: I18, ignorar_zerado: true }
+      M19: { linha: 102, usou: 1, pct_de: I19, ignorar_zerado: true }
+      M23: { linha: 110, usou: 1 }
+
+  ER1:
+    aba_pai: "ER1 0000"
+    regiao:  regiao_b
+    destinos:
+      F5:  { linha: 8,  usou: 1 }
+      F6:  { linha: 9,  usou: 1 }
+      F9:  { linha: 12, usou: 1 }
+      D13: { linha: 16, usou: 1, pct_de: B13 }
+      F19: { linha: 49, usou: 1, pct_de: B19 }
+      F22: { linha: 52, usou: 1 }
+      F25: { linha: 60, usou: 1, ignorar_zerado: true }
+      M5:  { linha: 72, usou: 1 }
+      K10: { linha: 75, usou: 1, pct_de: I10 }
+      M17: { linha: 115, usou: 1, ignorar_zerado: true }
+      M18: { linha: 117, usou: 1, pct_de: I18, ignorar_zerado: true }
+      M23: { linha: 124, usou: 1 }
