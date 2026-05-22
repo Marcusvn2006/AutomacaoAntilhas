@@ -1,7 +1,26 @@
 # Pipeline de Automação — Antilhas
 
-Automatiza o preenchimento semanal das **Planilhas Pai** de controle de estoque de antilhas
-para as regiões **Jaú, Bauru e Praia Grande**.
+Automatiza o preenchimento semanal das **Planilhas Pai** de controle de estoque de embalagens
+para as regiões **Jaú, Bauru e Praia Grande** — 32 lojas Boticário no total.
+
+O pipeline é composto por dois processos independentes que rodam em sequência toda semana.
+
+---
+
+## Como funciona
+
+```
+Processo 1 (rodar.bat)
+  └── Abre as 3 Planilhas Pai e insere as colunas USOU da semana
+  └── Preenche valores de referência (AUXILIAR.xlsx / AUXILIAR_VDS.xlsx)
+  └── Avança referências, esconde semanas antigas, gera backup
+
+Processo 2 (rodar_p2.bat)
+  └── Lê os arquivos .xlsm/.xlsx enviados pelas gerentes (pasta PENDENTES)
+  └── Aplica regras de conversão PCT (unidades → caixas)
+  └── Grava os valores nas linhas corretas das Planilhas Pai
+  └── Move arquivos processados para PROCESSADOS/
+```
 
 ---
 
@@ -14,180 +33,138 @@ para as regiões **Jaú, Bauru e Praia Grande**.
 pip install openpyxl pyyaml
 ```
 
+> ⚠️ Na instalação do Python, marque **"Add Python to PATH"**
+
 ---
 
 ## Estrutura de pastas
 
 ```
 antilhas/
-├── main.py                      ← script principal
-├── config.yaml                  ← configuração central (lojas, produtos, caminhos)
-├── README.md
-│
+├── rodar.bat                    ← executa o Processo 1 (duplo clique)
+├── rodar_p2.bat                 ← executa o Processo 2 (duplo clique)
+├── processo1.py
+├── processo2.py
+├── config_p1.yaml               ← configuração do Processo 1 (não sobe pro Git)
+├── config_p2.yaml               ← configuração do Processo 2 (não sobe pro Git)
+├── config_p1.yaml.example       ← modelo do config_p1.yaml
+├── config_p2.yaml.example       ← modelo do config_p2.yaml
+├── escritor.py
+├── validadores.py
 ├── processadores/
-│   ├── lojas.py                 ← leitura dos arquivos das lojas
-│   └── sistema.py               ← (futuro) Processo 1
 │
-├── validadores.py               ← validações de nome, estrutura e data
-├── escritor.py                  ← escrita na Planilha Pai
-├── notificador.py               ← (futuro) e-mail de resumo
+├── 00_ENTRADA/
+│   ├── AUXILIAR.xlsx            ← fonte de referência (não sobe pro Git)
+│   ├── AUXILIAR_VDS.xlsx        ← fonte de referência (não sobe pro Git)
+│   └── AUXILIAR_EMAIL/
+│       ├── BAURU/
+│       │   ├── PENDENTES/       ← arquivos das gerentes entram aqui
+│       │   ├── PROCESSADOS/     ← movidos após processamento bem-sucedido
+│       │   └── ERROS/           ← movidos em caso de erro
+│       ├── JAU/
+│       │   ├── PENDENTES/
+│       │   ├── PROCESSADOS/
+│       │   └── ERROS/
+│       └── PRAIA/
+│           ├── PENDENTES/
+│           ├── PROCESSADOS/
+│           └── ERROS/
 │
-├── 00_FONTES/lojas/             ← as lojas depositam os arquivos aqui
-├── 01_PROCESSADOS/              ← arquivos OK após cada execução
-├── 02_QUARENTENA/               ← arquivos com erro
-├── 03_LOGS/                     ← log de cada execução
-└── 04_PLANILHAS_PAI/            ← arquivos .xlsm por região
+├── 01_BACKUP/                   ← backup automático das Planilhas Pai
+├── 02_LOGS/                     ← logs de execução
+└── 04_PLANILHAS_PAI/            ← Planilhas Pai .xlsm (não sobem pro Git)
 ```
 
 ---
 
-## Como usar
+## Configuração inicial
 
-### 1. Antes de executar — obrigatório
-
-> **Feche as Planilhas Pai** (`JAU_...xlsm`, `BAURU_...xlsm`, `PRAIA_...xlsm`)
-> antes de rodar o script. O openpyxl não consegue salvar um arquivo que está
-> aberto no Excel e o processo vai falhar.
-
-### 2. Receber os arquivos das lojas
-
-Cada loja envia um arquivo Excel nomeado exatamente assim:
+Copie os arquivos de exemplo e preencha com os dados reais:
 
 ```
-LOJA_<CODIGO>_<AAAA-MM-DD>.xlsx
+config_p1.yaml.example  →  config_p1.yaml
+config_p2.yaml.example  →  config_p2.yaml
 ```
 
-Exemplos:
-```
-LOJA_3822_2026-05-19.xlsx
-LOJA_14446_2026-05-19.xlsx
-```
-
-Deposite todos os arquivos da semana em:
-
-```
-00_FONTES/lojas/
-```
-
-### 3. Executar o pipeline
-
-Abra o terminal na pasta `antilhas/` e execute:
-
-```
-python main.py
-```
-
-O script vai:
-1. Validar cada arquivo (nome, estrutura, data)
-2. Extrair os totais de cada produto
-3. Escrever na aba correta da Planilha Pai da região
-4. Mover arquivos OK para `01_PROCESSADOS/<semana>/lojas/`
-5. Mover arquivos com erro para `02_QUARENTENA/<semana>/lojas/`
-6. Gerar relatório no terminal e no log
-
-### 4. Verificar o resultado
-
-O relatório final aparece no terminal e é salvo em `03_LOGS/<semana>.log`:
-
-```
-✅ 7 loja(s) processadas com sucesso
-❌ 1 loja(s) com erro
-   • JD 14446 — Data interna (2026-05-18) difere da data no nome (2026-05-19)
-⚠️  2 loja(s) não enviaram arquivo
-   • DC 7529
-   • IT 6942
-```
+> Os arquivos `.yaml` reais contêm dados internos da empresa e estão no `.gitignore`.
+> Os arquivos `.example` são modelos com dados fictícios para referência.
 
 ---
 
-## Erros comuns e como resolver
+## Execução semanal
 
-| Erro | Causa | Solução |
-|------|-------|---------|
-| `Nome fora do padrão` | Nome do arquivo errado | Renomear para `LOJA_<COD>_<AAAA-MM-DD>.xlsx` |
-| `Código não encontrado` | Loja nova ou código errado | Adicionar loja no `config.yaml` |
-| `Aba 'CONTAGEM Semanal' não encontrada` | Template errado da loja | Reenviar com o template correto |
-| `Data interna difere` | A loja preencheu data errada em E3 | Corrigir a data na planilha e reenviar |
-| `Data não encontrada na linha 6` | Semana ainda não criada na Planilha Pai | Abrir o .xlsm e adicionar a coluna da semana |
-| `Não foi possível salvar` | Planilha Pai ainda aberta no Excel | Fechar o .xlsm e rodar novamente |
+### Etapa 1 — Processo 1 (início da semana)
 
-Arquivos com erro são movidos para `02_QUARENTENA/`. Corrija o problema e
-mova o arquivo de volta para `00_FONTES/lojas/` para reprocessar.
+1. Feche o Excel
+2. Duplo clique em `rodar.bat`
+3. Aguarde **"Concluido com sucesso!"**
 
----
+### Etapa 2 — Receber arquivos das gerentes
 
-## Agendamento automático (Windows Task Scheduler)
+Baixe os arquivos enviados por e-mail, renomeie conforme a tabela abaixo e coloque na pasta `PENDENTES/` da região correspondente:
 
-Para executar toda semana sem intervenção manual:
+| Região | Exemplos de arquivo |
+|:---:|:---|
+| BAURU | `BSH.xlsm`, `BOUL.xlsm`, `TT.xlsm`, `CDB.xlsm`, `ERB.xlsm` ... |
+| JAU | `JC.xlsm`, `BB.xlsm`, `ERJ.xlsm`, `CDJ.xlsm`, `ER SM.xlsm` ... |
+| PRAIA | `PL.xlsm`, `BOQ.xlsm`, `CDP.xlsm`, `ER BOQ.xlsm`, `ER MG.xlsm` ... |
 
-1. Abra o **Agendador de Tarefas** (`taskschd.msc`)
-2. Clique em **Criar Tarefa Básica**
-3. Configure:
-   - **Nome:** Antilhas Pipeline Semanal
-   - **Gatilho:** Semanal — toda segunda-feira às 08:00 (ajuste conforme prazo de envio das lojas)
-   - **Ação:** Iniciar um programa
-     - Programa: `C:\caminho\para\python.exe`
-     - Argumentos: `main.py`
-     - Iniciar em: `C:\Users\marcus\Desktop\AutomacaoAntilhas\antilhas`
-4. Marque **Executar com privilégios mais altos** se necessário
-5. Em **Configurações**, marque "Executar a tarefa o mais cedo possível se um início agendado for perdido"
+> O nome do arquivo (sem extensão) deve bater exatamente com a chave no `config_p2.yaml`.
+> Maiúscula/minúscula não importa. Espaços no meio **importam** (ex: `ER SM.xlsm`).
 
-**Dica:** Crie um arquivo `.bat` para facilitar:
+### Etapa 3 — Processo 2 (após receber as planilhas)
 
-```bat
-@echo off
-cd /d "C:\Users\marcus\Desktop\AutomacaoAntilhas\antilhas"
-python main.py
-pause
-```
+1. Feche o Excel
+2. Confirme que os arquivos estão nas pastas `PENDENTES/`
+3. Duplo clique em `rodar_p2.bat`
+4. Aguarde **"Concluido com sucesso!"**
 
 ---
 
-## Manutenção do config.yaml
+## Verificar resultados
 
-### Adicionar uma nova loja
+| O que checar | Onde |
+|:---|:---|
+| Lojas processadas | Mensagens na janela preta |
+| Arquivos com sucesso | Pasta `PROCESSADOS/` da região |
+| Arquivos com erro | Pasta `ERROS/` — arquivo `_ERRO.txt` explica o problema |
+| Lojas pendentes | Ainda em `PENDENTES/` (não foram movidas) |
+| Log detalhado | Pasta `02_LOGS/` — arquivo `.log` com data de hoje |
 
-Edite `config.yaml` e inclua na lista `lojas:`:
+---
+
+## Problemas comuns
+
+| Problema | Causa | Solução |
+|:---|:---|:---|
+| "Python não é reconhecido" | Python não está no PATH | Reinstale marcando "Add to PATH" |
+| "No module named openpyxl" | Biblioteca não instalada | `pip install openpyxl pyyaml` |
+| Arquivo ficou em PENDENTES | Nome do arquivo errado | Renomeie conforme a tabela e rode de novo |
+| "Arquivo aberto no Excel" | Excel estava aberto | Feche o Excel e rode de novo |
+| Processo 2 bloqueado | Execução anterior travou | Delete `.processo2.lock` na pasta `antilhas/` |
+| "Processo 1 não rodou esta semana" | P1 não foi executado | Rode `rodar.bat` primeiro |
+
+---
+
+## Adicionar nova loja
+
+1. Abra `config_p2.yaml`
+2. Adicione a loja na seção correspondente à região:
 
 ```yaml
-- codigo: "99999"
-  sigla: "XX"
-  regiao: "JAU"         # JAU, BAURU ou PRAIA
-  aba_planilha_pai: "XX 99999"
-  nome: "Boticário Nova Loja"
+SIGLA: { aba_pai: "SIGLA 00000", regiao: regiao, <<: *PADRAO }
 ```
 
-Confirme que a aba `XX 99999` existe na Planilha Pai da região antes de receber arquivos.
-
-### Adicionar um novo produto
-
-1. Edite `config.yaml`, seção `produtos:`:
-
-```yaml
-- nome_loja:  "NOVO PRODUTO"
-  nome_pai:   "NOVO PRODUTO 2026"
-  bloco:      "esquerdo"   # ou "direito"
-  valor:      "total"      # total | fechadas | abertas
-```
-
-2. Adicione a linha correspondente em `linhas_arquivo`:
-
-```yaml
-linhas_arquivo:
-  bloco_esquerdo:
-    NOVO PRODUTO: 20
-```
-
-### Completar códigos de Bauru e Praia Grande
-
-No `config.yaml`, preencha o campo `codigo:` das lojas com `""`. Após isso o pipeline
-já passa a validar e processar arquivos dessas lojas automaticamente.
+3. Para lojas CD/ER com mapeamento próprio, siga o padrão dos blocos `ERJ` ou `CDJ` já existentes
+4. O arquivo da gerente deve ser nomeado exatamente com a chave usada (ex: `SIGLA.xlsm`)
 
 ---
 
-## O que NÃO está implementado (Fase 2)
+## Segurança
 
-- **Processo 1** (`processadores/sistema.py`): leitura do arquivo do sistema interno
-  que hoje alimenta a aba `AUXILIAR` via VBA.
-- **Notificador** (`notificador.py`): envio automático de e-mail com o relatório semanal.
-- **Integração Bauru/Praia**: aguardando confirmação dos códigos das lojas.
+Os arquivos sensíveis estão protegidos pelo `.gitignore` e **nunca sobem para o repositório**:
+
+- `config_p1.yaml` e `config_p2.yaml` — contêm dados internos da empresa
+- `*.xlsm` / `*.xlsx` — Planilhas Pai e arquivos das lojas
+- `01_BACKUP/`, `02_LOGS/`, `00_ENTRADA/` — dados operacionais
+- `.processo2.lock`, `.env`
