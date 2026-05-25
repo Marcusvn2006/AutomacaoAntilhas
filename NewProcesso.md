@@ -36,7 +36,6 @@ AutomacaoAntilhas\
     │       │   └──CONF.xlsm
     │       │   └──DC.xlsm
     │       │   └──IT.xlsm
-    │       │   └──BR.xlsm
     │       │   └──CDJ.xlsm
     │       │   └──ERJ.xlsm
     │       └──BAURU
