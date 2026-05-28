@@ -17,6 +17,7 @@ import datetime as dt
 import logging
 import shutil
 import sys
+import re
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
@@ -24,6 +25,20 @@ import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.cell.cell import MergedCell
 import yaml
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATCH: openpyxl 3.1.5 ainda não suporta o atributo `extLst` que Excel 365
+# grava dentro de <patternFill>. Como só lemos/gravamos dados, fazemos
+# PatternFill IGNORAR esse kwarg para não crashar com arquivos novos.
+# ─────────────────────────────────────────────────────────────────────────────
+from openpyxl.styles.fills import PatternFill as _PatternFill
+_orig_PatternFill_init = _PatternFill.__init__
+
+def _safe_PatternFill_init(self, *args, **kwargs):
+    kwargs.pop("extLst", None)
+    _orig_PatternFill_init(self, *args, **kwargs)
+
+_PatternFill.__init__ = _safe_PatternFill_init
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,7 +305,9 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
                     cell.number_format = "DD/MM"
 
     # ── Fix 1: reescrever fórmulas USOU com referências ajustadas ───────────────
-    for orig_usou in sorted_usou:
+    # USOU 1 → fórmula completa com Novo Pedido (OFFSET)
+    # USOU 2+ → fórmula simples: =prev2-prev1 (sem Novo Pedido)
+    for usou_idx, orig_usou in enumerate(sorted_usou, start=1):
         # Cada USOU original em 'orig_usou' deslocou para frente 1 vez por cada
         # nova coluna inserida à esquerda ou na mesma posição
         n_shifts = sum(1 for u in sorted_usou if u <= orig_usou)
@@ -308,13 +325,18 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
             if (cell.value is not None
                     and isinstance(cell.value, str)
                     and cell.value.startswith("=")):
-                cell.value = (
-                    f"={letra_prev2}{row}"
-                    f"+IF(NOT(ISBLANK(OFFSET({letra_self}{row},0,6))),"
-                    f"N(OFFSET({letra_self}{row},0,6)),"
-                    f"N(OFFSET({letra_self}{row},0,7)))"
-                    f"-{letra_prev1}{row}"
-                )
+                if usou_idx == 1:
+                    # USOU 1: fórmula completa com Novo Pedido
+                    cell.value = (
+                        f"={letra_prev2}{row}"
+                        f"+IF(NOT(ISBLANK(OFFSET({letra_self}{row},0,6))),"
+                        f"N(OFFSET({letra_self}{row},0,6)),"
+                        f"N(OFFSET({letra_self}{row},0,7)))"
+                        f"-{letra_prev1}{row}"
+                    )
+                else:
+                    # USOU 2+: fórmula simples sem Novo Pedido
+                    cell.value = f"={letra_prev2}{row}-{letra_prev1}{row}"
 
     # ── Fix 3 (parte 2): limpar e reconstruir larguras + visibilidade ───────────
     ws.column_dimensions.clear()
@@ -380,6 +402,9 @@ def inserir_coluna(ws, dry_run: bool, logger: logging.Logger, nome_aba: str) -> 
     return cols_novas_por_usou
 
 
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PREENCHIMENTO — PRAIA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -440,6 +465,12 @@ def preencher_praia(
     esc(n, 31, vz(aux("00000000094778", n)))  # mesmo valor da linha 30
     esc(n, 32, vz(aux("00000000094779", n)))
     esc(n, 33, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── BOQ 11734 ─────────────────────────────────────────────────────────────
     n = "BOQ 11734"
@@ -452,6 +483,12 @@ def preencher_praia(
     esc(n, 45, vz(aux("00000000094775", n)))
     esc(n, 46, vz(aux("00000000094776", n)))
     esc(n, 47, vz(aux("00000000094777", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── TP 14462 ──────────────────────────────────────────────────────────────
     n = "TP 14462"
@@ -462,6 +499,12 @@ def preencher_praia(
     esc(n, 31, vz(aux("00000000087691", n)))
     esc(n, 32, vz(aux("00000000094682", n)))
     esc(n, 45, vz(aux("00000000094778", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── PB 5418 ───────────────────────────────────────────────────────────────
     n = "PB 5418"
@@ -471,6 +514,12 @@ def preencher_praia(
     esc(n, 43, vz(aux("00000000094776", n)))
     esc(n, 44, vz(aux("00000000094777", n)))
     esc(n, 46, vz(aux("00000000094778", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── MG 11733 ──────────────────────────────────────────────────────────────
     n = "MG 11733"
@@ -479,6 +528,12 @@ def preencher_praia(
     esc(n, 22, vz(aux("00000000003554", n)))
     esc(n, 25, vz(aux("00000000086027", n)))
     esc(n, 30, vz(aux("00000000094778", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── ATC - 23012 ───────────────────────────────────────────────────────────
     n = "ATC - 23012"
@@ -489,6 +544,12 @@ def preencher_praia(
     esc(n, 45, vz(aux("00000000094775", n)))
     esc(n, 46, vz(aux("00000000094776", n)))
     esc(n, 47, vz(aux("00000000094777", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── CDP - 24790 ───────────────────────────────────────────────────────────
     n = "CDP - 24790"
@@ -496,8 +557,8 @@ def preencher_praia(
     esc(n, 22,  vz(vds("00000000090821", n)))
     esc(n, 23,  vz(vds("00000000090822", n)))
     esc(n, 26,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 27,  vz(vds("00000000030190", n)))
-    esc(n, 28,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 27,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 28,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n))  + vz(vds("00000000094378", n)))
     esc(n, 31,  vz(vds("00000000089402", n)) + vz(vds("00000000003682", n)))
     esc(n, 32,  vz(vds("00000000089401", n)))
     esc(n, 33,  vz(vds("00000000003704", n)))
@@ -529,6 +590,11 @@ def preencher_praia(
     esc(n, 120, vz(vds("00000000096437", n)))
     esc(n, 121, vz(vds("00000000096438", n)))
     esc(n, 122, vz(vds("00000000096441", n)))
+    esc(n, 125, vz(vds("00000000096584", n)))
+    esc(n, 126, vz(vds("00000000097579", n)))
+    esc(n, 127, vz(vds("00000000097622", n)))
+    esc(n, 128, vz(vds("00000000096579", n)))
+    esc(n, 129, vz(vds("00000000096583", n)))
 
     # ── ER BOQ - 23614 ────────────────────────────────────────────────────────
     n = "ER BOQ - 23614"
@@ -539,8 +605,8 @@ def preencher_praia(
     esc(n, 28,  vz(vds("00000000003608", n)))
     esc(n, 29,  vz(vds("00000000003610", n)))
     esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 33,  vz(vds("00000000030190", n)))
-    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 33,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 37,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
     esc(n, 38,  vz(vds("00000000003704", n)))
     esc(n, 39,  vz(vds("00000000054572", n)))
@@ -573,6 +639,10 @@ def preencher_praia(
     esc(n, 128, vz(vds("00000000097241", n)))
     esc(n, 130, vz(vds("00000000096438", n)))
     esc(n, 131, vz(vds("00000000096441", n)))
+    esc(n, 134, vz(vds("00000000096584", n)))
+    esc(n, 135, vz(vds("00000000097579", n)))
+    esc(n, 136, vz(vds("00000000096579", n)))
+    esc(n, 137, vz(vds("00000000096583", n)))
 
     # ── ER PBE - 23343 ────────────────────────────────────────────────────────
     n = "ER PBE - 23343"
@@ -583,8 +653,8 @@ def preencher_praia(
     esc(n, 28,  vz(vds("00000000003608", n)))
     esc(n, 29,  vz(vds("00000000003610", n)))
     esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 33,  vz(vds("00000000030190", n)))
-    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 33,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n))  + vz(vds("00000000094378", n)))
     esc(n, 37,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
     esc(n, 38,  vz(vds("00000000003704", n)))
     esc(n, 39,  vz(vds("00000000054572", n)))
@@ -616,6 +686,10 @@ def preencher_praia(
     esc(n, 129, vz(vds("00000000096437", n)))  # linha 47 da VD ignorada
     esc(n, 130, vz(vds("00000000096438", n)))
     esc(n, 131, vz(vds("00000000096441", n)))
+    esc(n, 134, vz(vds("00000000096584", n)))
+    esc(n, 135, vz(vds("00000000097579", n)))
+    esc(n, 136, vz(vds("00000000096579", n)))
+    esc(n, 137, vz(vds("00000000096583", n)))
 
     # ── ER MG - 24119 ─────────────────────────────────────────────────────────
     n = "ER MG - 24119"
@@ -623,8 +697,8 @@ def preencher_praia(
     esc(n, 23,  vz(vds("00000000090821", n)))
     esc(n, 24,  vz(vds("00000000090822", n)))
     esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 28,  vz(vds("00000000030190", n)))
-    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 28,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n))  + vz(vds("00000000094378", n)))
     esc(n, 32,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
     esc(n, 33,  vz(vds("00000000003704", n)))
     esc(n, 38,  vz(vds("00000000054572", n)))
@@ -662,6 +736,10 @@ def preencher_praia(
     esc(n, 124, vz(vds("00000000096437", n)))
     esc(n, 125, vz(vds("00000000096438", n)))
     esc(n, 126, vz(vds("00000000096441", n)))
+    esc(n, 129, vz(vds("00000000096584", n)))
+    esc(n, 130, vz(vds("00000000097579", n)))
+    esc(n, 131, vz(vds("00000000096579", n)))
+    esc(n, 132, vz(vds("00000000096583", n)))
 
     return contagem
 
@@ -728,6 +806,12 @@ def preencher_jau(
     esc(n, 33, vz(aux("00000000094775", n)))
     esc(n, 34, vz(aux("00000000094776", n)))
     esc(n, 37, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── JD 14446 ──────────────────────────────────────────────────────────────
     n = "JD 14446"
@@ -737,6 +821,12 @@ def preencher_jau(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 26, vz(aux("00000000086027", n)))
     esc(n, 34, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── BB 12066 ──────────────────────────────────────────────────────────────
     n = "BB 12066"
@@ -749,6 +839,12 @@ def preencher_jau(
     esc(n, 30, vz(aux("00000000094776", n)))
     esc(n, 33, vz(aux("00000000095151", n)))
     esc(n, 34, vz(aux("00000000094682", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── SM 23048 ──────────────────────────────────────────────────────────────
     n = "SM 23048"
@@ -758,6 +854,12 @@ def preencher_jau(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 26, vz(aux("00000000086027", n)))
     esc(n, 34, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── JSH 11722 ─────────────────────────────────────────────────────────────
     n = "JSH 11722"
@@ -771,6 +873,12 @@ def preencher_jau(
     esc(n, 29, vz(aux("00000000094776", n)))
     esc(n, 32, vz(aux("00000000095151", n)))
     esc(n, 33, vz(aux("00000000094682", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── CONF 14553 ────────────────────────────────────────────────────────────
     n = "CONF 14553"
@@ -780,6 +888,12 @@ def preencher_jau(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 26, vz(aux("00000000086027", n)))
     esc(n, 33, vz(aux("00000000094682", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── DC 7529 ───────────────────────────────────────────────────────────────
     n = "DC 7529"
@@ -789,6 +903,12 @@ def preencher_jau(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 46, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── IT 6942 ───────────────────────────────────────────────────────────────
     n = "IT 6942"
@@ -802,6 +922,12 @@ def preencher_jau(
     esc(n, 29, vz(aux("00000000094775", n)))
     esc(n, 30, vz(aux("00000000094776", n)))
     esc(n, 34, vz(aux("00000000094682", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── BR 6954 ───────────────────────────────────────────────────────────────
     n = "BR 6954"
@@ -811,6 +937,12 @@ def preencher_jau(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 46, vz(aux("00000000094777", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── CDJ 23091 ─────────────────────────────────────────────────────────────
     n = "CDJ 23091"
@@ -818,8 +950,8 @@ def preencher_jau(
     esc(n, 15,  vz(vds("00000000090821", n)))
     esc(n, 16,  vz(vds("00000000090822", n)))
     esc(n, 19,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 20,  vz(vds("00000000030190", n)))
-    esc(n, 21,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 20,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 21,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 24,  vz(vds("00000000089402", n)))
     esc(n, 25,  vz(vds("00000000089401", n)))
     esc(n, 26,  vz(vds("00000000003704", n)))
@@ -856,6 +988,11 @@ def preencher_jau(
     esc(n, 116, vz(vds("00000000096437", n)))
     esc(n, 117, vz(vds("00000000096438", n)))
     esc(n, 118, vz(vds("00000000096441", n)))
+    esc(n, 121, vz(vds("00000000096584", n)))
+    esc(n, 122, vz(vds("00000000097579", n)))
+    esc(n, 123, vz(vds("00000000097622", n)))
+    esc(n, 124, vz(vds("00000000096579", n)))
+    esc(n, 125, vz(vds("00000000096583", n)))
 
     # ── ERJ 22838 ─────────────────────────────────────────────────────────────
     n = "ERJ 22838"
@@ -866,8 +1003,8 @@ def preencher_jau(
     esc(n, 28,  vz(vds("00000000090821", n)))
     esc(n, 29,  vz(vds("00000000090822", n)))
     esc(n, 32,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 33,  vz(vds("00000000030190", n)))
-    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 33,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 34,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 37,  vz(vds("00000000089402", n)) + vz(vds("00000000003682", n)))
     esc(n, 38,  vz(vds("00000000089401", n)))
     esc(n, 39,  vz(vds("00000000003704", n)))
@@ -909,6 +1046,11 @@ def preencher_jau(
     esc(n, 130, vz(vds("00000000096437", n)))
     esc(n, 131, vz(vds("00000000096438", n)))
     esc(n, 132, vz(vds("00000000096441", n)))
+    esc(n, 135, vz(vds("00000000096584", n)))
+    esc(n, 136, vz(vds("00000000097579", n)))
+    esc(n, 137, vz(vds("00000000097622", n)))
+    esc(n, 138, vz(vds("00000000096579", n)))
+    esc(n, 139, vz(vds("00000000096583", n)))
 
     # ── ER SM 24137 ───────────────────────────────────────────────────────────
     n = "ER SM 24137"
@@ -916,8 +1058,8 @@ def preencher_jau(
     esc(n, 23,  vz(vds("00000000090821", n)))
     esc(n, 24,  vz(vds("00000000090822", n)))
     esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 28,  vz(vds("00000000030190", n)))
-    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000089402", n)))
+    esc(n, 28,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 32,  vz(vds("00000000003682", n)) + vz(vds("00000000089401", n)))
     esc(n, 33,  vz(vds("00000000089401", n)))  # VD row 16 usado novamente — replicado do VBA
     esc(n, 34,  vz(vds("00000000003704", n)))
@@ -957,6 +1099,11 @@ def preencher_jau(
     esc(n, 121, vz(vds("00000000096438", n)))
     esc(n, 122, vz(vds("00000000096441", n)))
     esc(n, 125, vz(vds("00000000094682", n)))
+    esc(n, 128, vz(vds("00000000096584", n)))
+    esc(n, 129, vz(vds("00000000097579", n)))
+    esc(n, 130, vz(vds("00000000097622", n)))
+    esc(n, 131, vz(vds("00000000096579", n)))
+    esc(n, 132, vz(vds("00000000096583", n)))
 
     return contagem
 
@@ -1016,6 +1163,12 @@ def preencher_bauru(
     esc(n, 22, vz(aux("00000000003554", n)))
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 27, vz(aux("00000000086027", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── BOUL 13868 ────────────────────────────────────────────────────────────
     n = "BOUL 13868"
@@ -1025,6 +1178,12 @@ def preencher_bauru(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 48, vz(aux("00000000094776", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── TT 13370 ──────────────────────────────────────────────────────────────
     n = "TT 13370"
@@ -1035,6 +1194,12 @@ def preencher_bauru(
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 46, vz(aux("00000000094775", n)))
     esc(n, 47, vz(aux("00000000094776", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── TDQ 20000 ─────────────────────────────────────────────────────────────
     n = "TDQ 20000"
@@ -1044,6 +1209,12 @@ def preencher_bauru(
     esc(n, 23, vz(aux("00000000089400", n)))
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 47, vz(aux("00000000094779", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── GET 23049 ─────────────────────────────────────────────────────────────
     n = "GET 23049"
@@ -1056,6 +1227,12 @@ def preencher_bauru(
     esc(n, 33, vz(aux("00000000094682", n)))
     esc(n, 46, vz(aux("00000000094778", n)))
     esc(n, 47, vz(aux("00000000094779", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── Q7 6727 ───────────────────────────────────────────────────────────────
     n = "Q7 6727"
@@ -1068,6 +1245,12 @@ def preencher_bauru(
     esc(n, 34, vz(aux("00000000094682", n)))
     esc(n, 44, vz(aux("00000000094775", n)))
     esc(n, 48, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── Q2 12466 ──────────────────────────────────────────────────────────────
     n = "Q2 12466"
@@ -1080,6 +1263,12 @@ def preencher_bauru(
     esc(n, 34, vz(aux("00000000094682", n)))
     esc(n, 47, vz(aux("00000000094779", n)))
     esc(n, 48, vz(aux("00000000095151", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── MD 12942 ──────────────────────────────────────────────────────────────
     n = "MD 12942"
@@ -1090,6 +1279,12 @@ def preencher_bauru(
     esc(n, 27, vz(aux("00000000086027", n)))
     esc(n, 33, vz(aux("00000000087691", n)))
     esc(n, 47, vz(aux("00000000094776", n)))
+    esc(n, 20, vz(aux("00000000096437", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096438", n)), usou=2)
+    esc(n, 22, vz(aux("00000000096440", n)), usou=2)
+    esc(n, 23, vz(aux("00000000096441", n)), usou=2)
+    esc(n, 21, vz(aux("00000000096579", n)), usou=3)
+    esc(n, 22, vz(aux("00000000096583", n)), usou=3)
 
     # ── CDB - 23280 ───────────────────────────────────────────────────────────
     n = "CDB - 23280"
@@ -1097,8 +1292,8 @@ def preencher_bauru(
     esc(n, 17,  vz(vds("00000000090821", n)))
     esc(n, 18,  vz(vds("00000000090822", n)))
     esc(n, 21,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 22,  vz(vds("00000000030190", n)))
-    esc(n, 23,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 22,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 23,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 25,  vz(vds("00000000003704", n)))  # mesmo valor da linha 28 — replicado do VBA
     esc(n, 26,  vz(vds("00000000089402", n)))
     esc(n, 27,  vz(vds("00000000089401", n)))
@@ -1143,6 +1338,11 @@ def preencher_bauru(
     esc(n, 119, vz(vds("00000000096437", n)))
     esc(n, 120, vz(vds("00000000096438", n)))
     esc(n, 121, vz(vds("00000000096441", n)))
+    esc(n, 124, vz(vds("00000000096584", n)))
+    esc(n, 125, vz(vds("00000000097579", n)))
+    esc(n, 126, vz(vds("00000000097622", n)))
+    esc(n, 127, vz(vds("00000000096579", n)))
+    esc(n, 128, vz(vds("00000000096583", n)))
 
     # ── ERB - 22851 ───────────────────────────────────────────────────────────
     n = "ERB - 22851"
@@ -1150,8 +1350,8 @@ def preencher_bauru(
     esc(n, 23,  vz(vds("00000000090821", n)))
     esc(n, 24,  vz(vds("00000000090822", n)))
     esc(n, 27,  vz(vds("00000000094389", n)) + vz(vds("00000000043673", n)))
-    esc(n, 28,  vz(vds("00000000030190", n)))
-    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)))
+    esc(n, 28,  vz(vds("00000000030190", n))  + vz(vds("00000000094388", n)))
+    esc(n, 29,  vz(vds("00000000045033", n)) + vz(vds("00000000043763", n)) + vz(vds("00000000030194", n)) + vz(vds("00000000094378", n)))
     esc(n, 32,  vz(vds("00000000089402", n)))
     esc(n, 33,  vz(vds("00000000089401", n)))
     esc(n, 34,  vz(vds("00000000003704", n)))
@@ -1186,6 +1386,11 @@ def preencher_bauru(
     esc(n, 129, vz(vds("00000000096437", n)))
     esc(n, 130, vz(vds("00000000096438", n)))
     esc(n, 131, vz(vds("00000000096441", n)))
+    esc(n, 134, vz(vds("00000000096584", n)))
+    esc(n, 135, vz(vds("00000000097579", n)))
+    esc(n, 136, vz(vds("00000000097622", n)))
+    esc(n, 137, vz(vds("00000000096579", n)))
+    esc(n, 138, vz(vds("00000000096583", n)))
 
     return contagem
 
@@ -1283,8 +1488,11 @@ def inserir_coluna_novo_pedido(
     # A inserção acima empurrou +1 todas as colunas USOU à direita de col_alvo.
     # As fórmulas que foram geradas em inserir_coluna ficaram com referências
     # uma coluna atrás do correto — aqui as reescrevemos na posição definitiva.
-    usou_cols_apos = _encontrar_todas_col_usou(ws)
+    # USOU 1 → fórmula completa com Novo Pedido (OFFSET)
+    # USOU 2+ → fórmula simples: =prev2-prev1 (sem Novo Pedido)
+    usou_cols_apos = sorted(_encontrar_todas_col_usou(ws))
     for usou_col in usou_cols_apos:
+        usou_idx = usou_cols_apos.index(usou_col) + 1  # 1-based
         if usou_col <= col_alvo:
             continue  # USOU à esquerda do ponto de inserção: não foi deslocado
         if usou_col < 3:
@@ -1297,13 +1505,18 @@ def inserir_coluna_novo_pedido(
             if (cell.value is not None
                     and isinstance(cell.value, str)
                     and cell.value.startswith("=")):
-                cell.value = (
-                    f"={letra_prev2}{row}"
-                    f"+IF(NOT(ISBLANK(OFFSET({letra_self}{row},0,6))),"
-                    f"N(OFFSET({letra_self}{row},0,6)),"
-                    f"N(OFFSET({letra_self}{row},0,7)))"
-                    f"-{letra_prev1}{row}"
-                )
+                if usou_idx == 1:
+                    # USOU 1: fórmula completa com Novo Pedido
+                    cell.value = (
+                        f"={letra_prev2}{row}"
+                        f"+IF(NOT(ISBLANK(OFFSET({letra_self}{row},0,6))),"
+                        f"N(OFFSET({letra_self}{row},0,6)),"
+                        f"N(OFFSET({letra_self}{row},0,7)))"
+                        f"-{letra_prev1}{row}"
+                    )
+                else:
+                    # USOU 2+: fórmula simples sem Novo Pedido
+                    cell.value = f"={letra_prev2}{row}-{letra_prev1}{row}"
 
     # ── 7. Reconstruir larguras com deslocamento de +1 para cols >= col_alvo ──
     ws.column_dimensions.clear()
@@ -1435,6 +1648,11 @@ def processar_planilha(
         if not eh_elegivel(nome_aba):
             continue
         ws = wb[nome_aba]
+        
+        # --- APLICA O AJUSTE 2 ANTES DE INSERIR COLUNAS ---
+        ajustar_formulas_manuais(ws, nome_aba, dry_run, logger)
+        # --------------------------------------------------
+
         # USOU primeiro — insere colunas e oculta semanas antigas
         # Novo Pedido depois — sua visibilidade sobrescreve o que o USOU tiver ocultado
         cols_dict = inserir_coluna(ws, dry_run, logger, nome_aba)
@@ -1442,7 +1660,15 @@ def processar_planilha(
             abas_sem_usou.append(nome_aba)
         else:
             col_novas[nome_aba] = cols_dict
-        inserir_coluna_novo_pedido(ws, dry_run, logger, nome_aba)
+        novo_pedido_col = inserir_coluna_novo_pedido(ws, dry_run, logger, nome_aba)
+        # inserir_coluna_novo_pedido insere uma coluna que desloca +1 todas as
+        # posições USOU registradas em col_novas que estejam à sua direita.
+        # Sem este ajuste, preencher_fn escreve na coluna errada (uma à esquerda).
+        if nome_aba in col_novas and novo_pedido_col is not None:
+            col_novas[nome_aba] = {
+                k: v + 1 if v >= novo_pedido_col else v
+                for k, v in col_novas[nome_aba].items()
+            }
 
     # Preencher valores das lojas
     contagem = preencher_fn(wb, leitor_aux, leitor_vds, col_novas, dry_run, logger)
@@ -1513,6 +1739,75 @@ def _setup_logging(log_dir: Path, dry_run: bool) -> logging.Logger:
 
     return logger
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DETECÇÃO DE FORMULAS ESCRITAS 
+# ─────────────────────────────────────────────────────────────────────────────
+
+import re
+
+# Regex para achar células (ex: U5, $U$5). O (?!\s*\() no final impede que ele
+# confunda funções com números no nome (como LOG10()) com referências de célula.
+_REF_PATTERN = re.compile(r'(?<![A-Za-z])(\$?)([A-Za-z]{1,3})(\$?)(\d+)\b(?!\s*\()')
+
+def _avancar_referencias_formula_manual(formula: str, offset: int = 2) -> str:
+    """Soma colunas em qualquer referência de célula dentro da fórmula."""
+    def replacer(match):
+        abs_col = match.group(1)
+        col_letters = match.group(2).upper()  # Força maiúsculo para evitar erro
+        abs_row = match.group(3)
+        row_num = match.group(4)
+        try:
+            col_idx = column_index_from_string(col_letters)
+            new_col = get_column_letter(col_idx + offset)
+            return f"{abs_col}{new_col}{abs_row}{row_num}"
+        except ValueError:
+            return match.group(0)
+
+    return _REF_PATTERN.sub(replacer, formula)
+
+def ajustar_formulas_manuais(ws, nome_aba: str, dry_run: bool, logger: logging.Logger):
+    """Varre as colunas à esquerda do primeiro USOU em busca de fórmulas para ajustar."""
+    
+    # Trava inteligente: Ignora as abas de CD e ER (só processa lojas regulares)
+    aba_upper = nome_aba.upper()
+    if "CD" in aba_upper or "ER" in aba_upper:
+        return
+
+    # Pula abas de "LOJAS" (resumos) e auxiliares
+    if aba_upper in ("LOJAS PRAIA", "LOJAS BAURU", "LOJAS JAÚ", "AUXILIAR", "AUXILIAR VD'S", "PLANILHA1"):
+        return
+
+    cols_usou = _encontrar_todas_col_usou(ws)
+    if not cols_usou:
+        return
+
+    primeiro_usou = min(cols_usou)
+    formulas_alteradas = 0
+
+    # Varre as linhas apenas até a coluna imediatamente antes do USOU 1
+    for col in range(1, primeiro_usou):
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col)
+            val = cell.value
+            
+            # Se a célula for uma string começando com "=", é fórmula
+            if isinstance(val, str) and val.startswith("="):
+                nova_formula = _avancar_referencias_formula_manual(val, offset=2)
+                
+                # Se a Regex alterou algo, aplicamos a nova fórmula na célula
+                if nova_formula != val:
+                    if not dry_run:
+                        cell.value = nova_formula
+                    formulas_alteradas += 1
+
+    # Aviso limpo seguindo o padrão do seu script
+    if formulas_alteradas > 0:
+        msg = f"{formulas_alteradas} fórmula(s) manual(is) ajustada(s)"
+        if dry_run:
+            logger.debug("    [DRY-RUN] Aba '%s': %s", nome_aba, msg)
+        else:
+            logger.debug("    Aba '%s': %s", nome_aba, msg)
+            print(f"      {nome_aba:<22} — {msg}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN

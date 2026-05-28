@@ -32,6 +32,7 @@ AutomacaoAntilhas\
     ├── config_p1.yaml
     ├── config_p2.yaml
     ├── 00_ENTRADA\
+    │   └── AUXILIAR.xlsx / AUXILIAR_VDS.xlsx
     │   └── AUXILIAR_EMAIL\
     │       ├── BAURU\
     │       │   └── PENDENTES\

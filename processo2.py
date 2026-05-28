@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gc
 import json
 import logging
 import math
@@ -28,6 +29,21 @@ from typing import Dict, List, Optional, Tuple
 import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
 import yaml
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATCH: openpyxl 3.1.5 ainda não suporta o atributo `extLst` que Excel 365
+# grava dentro de <patternFill>. Como só lemos dados (não formatação),
+# fazemos PatternFill IGNORAR esse kwarg para não crashar com arquivos novos.
+# Bug: https://foss.heptapod.net/openpyxl/openpyxl/-/issues (extLst PatternFill)
+# ─────────────────────────────────────────────────────────────────────────────
+from openpyxl.styles.fills import PatternFill as _PatternFill
+_orig_PatternFill_init = _PatternFill.__init__
+
+def _safe_PatternFill_init(self, *args, **kwargs):
+    kwargs.pop("extLst", None)  # descarta atributo não suportado
+    _orig_PatternFill_init(self, *args, **kwargs)
+
+_PatternFill.__init__ = _safe_PatternFill_init
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,6 +80,33 @@ def _eh_numerico(valor) -> bool:
     return isinstance(valor, (int, float))
 
 
+_NUMERO_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+
+def _extrair_numero(valor):
+    """
+    Extrai um número de qualquer valor de célula.
+      - None             → None
+      - int / float      → float(valor)
+      - bool             → None  (evita True=1, False=0)
+      - str com número   → primeiro número encontrado (ex.: '7 PCT' → 7.0)
+      - str sem número   → None
+    Aceita vírgula ou ponto como decimal.
+    """
+    if valor is None or isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    if isinstance(valor, str):
+        s = valor.strip()
+        if not s:
+            return None
+        m = _NUMERO_RE.search(s)
+        if m:
+            return float(m.group().replace(",", "."))
+    return None
+
+
 def _cel_tem_data(cell) -> bool:
     """Retorna True se a célula contém uma data (objeto date/datetime)."""
     val = cell.value
@@ -96,6 +139,27 @@ def _aplicar_regra_pct(valor: float, pct: Optional[float]) -> float:
     if valor < pct:
         return 0.0
     return float(math.floor(valor / pct))
+
+
+def _aplicar_regra_pct_mult(valor: float, pct: Optional[float]) -> float:
+    """
+    Converte caixas em unidades usando o PCT (unidades por caixa).
+    Inverso de _aplicar_regra_pct — usado quando a loja informa em caixas
+    mas o correto é em unidades (chave `pct_mult` no YAML).
+
+    Regra:
+        PCT inválido (None, 0 ou negativo) → retorna V (sem conversão)
+        V ≥ 50                             → retorna V (já está em unidades)
+        PCT ≤ V < 50                       → retorna V (em unidades, pode ter decimal)
+        V < PCT (e V < 50)                 → retorna floor(V × PCT) (caixas → unidades)
+    """
+    if pct is None or pct <= 0:
+        return valor
+    if valor >= 50:
+        return valor
+    if valor >= pct:
+        return valor  # entre PCT e 50: já em unidades (pode ter decimal)
+    return float(math.floor(valor * pct))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,9 +257,21 @@ def mover_para_processados(arquivo: Path, pasta_regiao: Path,
         logger.debug("[DRY-RUN] Moveria %s → %s", arquivo, destino)
         return destino
     destino_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(arquivo), str(destino))
-    logger.info("Movido: %s → %s", arquivo.name, destino)
-    return destino
+    for _tentativa in range(5):
+        try:
+            shutil.move(str(arquivo), str(destino))
+            logger.info("Movido: %s → %s", arquivo.name, destino)
+            return destino
+        except PermissionError:
+            if _tentativa < 4:
+                time.sleep(1.0)
+    # Não conseguiu mover — avisa mas não crasha
+    logger.warning(
+        "AVISO: não foi possível mover %s para PROCESSADOS (arquivo bloqueado). "
+        "Arquivo permanece em PENDENTES.",
+        arquivo.name,
+    )
+    return arquivo
 
 
 def mover_para_erros(arquivo: Path, pasta_regiao: Path, data_str: str,
@@ -221,7 +297,30 @@ def mover_para_erros(arquivo: Path, pasta_regiao: Path, data_str: str,
         return destino_arq, destino_txt
 
     destino_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(arquivo), str(destino_arq))
+    # Retry: antivírus/indexador pode manter o arquivo aberto por alguns segundos.
+    # 5 tentativas × 1 s = até 4 s de espera.
+    movido = False
+    for _tentativa in range(5):
+        try:
+            shutil.move(str(arquivo), str(destino_arq))
+            movido = True
+            break
+        except PermissionError:
+            if _tentativa < 4:
+                time.sleep(1.0)
+
+    if not movido:
+        # Arquivo bloqueado mesmo após retries (AV, indexador, outro processo).
+        # Deixa em PENDENTES e grava o txt de erro ao lado — NÃO crashar o script.
+        logger.warning(
+            "AVISO: não foi possível mover %s para ERROS (arquivo bloqueado). "
+            "Deixando em PENDENTES. Motivo do erro original: %s",
+            arquivo.name, motivo,
+        )
+        txt_pendentes = arquivo.parent / f"{sigla}_ERRO.txt"
+        txt_pendentes.write_text(conteudo_txt, encoding="utf-8")
+        return arquivo, txt_pendentes
+
     destino_txt.write_text(conteudo_txt, encoding="utf-8")
     logger.warning("ERRO: %s → %s (%s)", arquivo.name, destino_arq, motivo)
     return destino_arq, destino_txt
@@ -248,7 +347,10 @@ def ler_arquivo_loja(
         - detalhe_erro: detalhes adicionais
     """
     try:
-        wb = openpyxl.load_workbook(str(arquivo), data_only=True, keep_vba=False, read_only=True)
+        # read_only=False: openpyxl carrega tudo na memória e fecha o handle
+        # do disco imediatamente após o load — sem isso o ZipFile fica aberto
+        # durante toda a leitura e bloqueia o shutil.move subsequente.
+        wb = openpyxl.load_workbook(str(arquivo), data_only=True, keep_vba=False)
     except PermissionError:
         return None, "ARQUIVO_ABERTO", "Arquivo está aberto no Excel"
     except Exception as exc:
@@ -272,31 +374,87 @@ def ler_arquivo_loja(
             except Exception:
                 return None, "CELULA_INVALIDA", f"Célula '{celula_origem}' tem formato inválido"
 
-            val = ws.cell(row=linha, column=col_idx).value
-
-            # ── Regra "ignorar se zerado" (aplicada ANTES de qualquer conversão) ──
-            # Quando configurada, valor None ou 0 faz a célula ser pulada
-            # (não escreve na planilha pai, preserva valor anterior).
             ignorar_zerado = (
                 isinstance(destino_cfg, dict) and destino_cfg.get("ignorar_zerado")
             )
-            if ignorar_zerado:
-                if val is None or (isinstance(val, (int, float)) and float(val) == 0.0):
-                    logger.debug(
-                        "Ignorando %s (regra ignorar_zerado: V=%r)",
-                        celula_origem, val,
+
+            # ── pct_mult: fórmula (duas_antes × PCT) + uma_antes ─────────
+            # Lê as duas colunas à esquerda da célula de destino (ex: para M6
+            # lê K6 e L6), multiplica K6 pelo PCT e soma L6.
+            # Não usa o valor da célula principal (ex: M6) — a fórmula é
+            # calculada inteiramente aqui.
+            pct_mult = destino_cfg.get("pct_mult") if isinstance(destino_cfg, dict) else None
+            if pct_mult:
+                try:
+                    col_pct_letra = ''.join(c for c in pct_mult if c.isalpha())
+                    linha_pct = int(''.join(c for c in pct_mult if c.isdigit()))
+                    pct_raw = ws.cell(
+                        row=linha_pct,
+                        column=column_index_from_string(col_pct_letra),
+                    ).value
+                    pct_val_fm = _extrair_numero(pct_raw) or 0.0
+
+                    duas_raw = ws.cell(row=linha, column=col_idx - 2).value
+                    uma_raw  = ws.cell(row=linha, column=col_idx - 1).value
+
+                    # Ambas as células de entrada vazias → sem dado, pula
+                    if duas_raw is None and uma_raw is None:
+                        continue
+
+                    duas_val = _extrair_numero(duas_raw) or 0.0
+                    uma_val  = _extrair_numero(uma_raw)  or 0.0
+
+                    valor = _aplicar_regra_pct_mult(duas_val, pct_val_fm) + uma_val
+                except Exception as exc:
+                    logger.warning(
+                        "Erro na fórmula pct_mult em %s: %s", celula_origem, exc
                     )
                     continue
 
-            if val is None:
+                if ignorar_zerado and valor == 0.0:
+                    logger.debug(
+                        "Ignorando %s (ignorar_zerado: resultado=0)", celula_origem
+                    )
+                    continue
+
+                logger.info(
+                    "Fórmula pct_mult em %s: pct_mult(%g, %g) + %g = %g",
+                    celula_origem, duas_val, pct_val_fm, uma_val, valor,
+                )
+                buffer[celula_origem] = valor
+                continue  # célula processada — pula fluxo normal abaixo
+
+            # ── Fluxo normal (sem pct_mult) ───────────────────────────────
+            val_raw = ws.cell(row=linha, column=col_idx).value
+            # Extrai número mesmo se a loja digitou texto junto (ex: '7 PCT' → 7.0)
+            val = _extrair_numero(val_raw)
+
+            # Regra "ignorar se zerado": valor None ou 0 → pula a célula
+            if ignorar_zerado:
+                if val is None or val == 0.0:
+                    logger.debug(
+                        "Ignorando %s (regra ignorar_zerado: V=%r)",
+                        celula_origem, val_raw,
+                    )
+                    continue
+
+            if val_raw is None:
                 # Célula vazia: pula (não escreve na planilha pai)
                 continue
-            if not _eh_numerico(val):
+            if val is None:
+                # Tinha algo na célula mas sem nenhum número extraível
                 return None, "VALOR_NAO_NUMERICO", (
-                    f"Célula '{celula_origem}' contém valor não numérico: {val!r}"
+                    f"Célula '{celula_origem}' contém valor não numérico: {val_raw!r}"
                 )
 
-            valor = float(val)
+            # Avisa quando extraiu número de uma string (ex: '7 PCT' → 7)
+            if isinstance(val_raw, str):
+                logger.info(
+                    "Célula %s: extraído número %g de '%s'",
+                    celula_origem, val, val_raw,
+                )
+
+            valor = val
 
             # ── Regra PCT: conversão unidades → caixas ────────────────────
             pct_de = destino_cfg.get("pct_de") if isinstance(destino_cfg, dict) else None
@@ -307,8 +465,8 @@ def ler_arquivo_loja(
                     linha_pct = int(''.join(c for c in pct_de if c.isdigit()))
                     col_pct_idx = column_index_from_string(col_pct_letra)
                     pct_raw = ws.cell(row=linha_pct, column=col_pct_idx).value
-                    if pct_raw is not None and _eh_numerico(pct_raw):
-                        pct_val = float(pct_raw)
+                    # Extrai número mesmo se for string tipo '12 PCT'
+                    pct_val = _extrair_numero(pct_raw)
                 except Exception:
                     pct_val = None
 
@@ -332,6 +490,8 @@ def ler_arquivo_loja(
         return buffer, None, None
     finally:
         wb.close()
+        del wb       # remove referência explícita
+        gc.collect() # força GC: libera ExcelReader.archive (ZipFile) antes do move
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -484,7 +644,10 @@ def processar_regiao(
             resumo["com_erro"].append({
                 "loja": sigla, "arquivo": arquivo.name, "motivo": motivo,
             })
+            # Mostra o detalhe real (ex: mensagem do openpyxl) direto no console
             print(f"     {sigla:<22} — ERRO: {motivo}")
+            if detalhe:
+                print(f"       └─ {detalhe}")
             continue
 
         # 4.5 Verifica se as colunas USOU necessárias existem
@@ -507,6 +670,7 @@ def processar_regiao(
         # 4.6 Aplica o buffer (escreve nas células da planilha pai)
         celulas_escritas_usou1 = 0
         celulas_escritas_usou2 = 0
+        celulas_escritas_usou3 = 0
         celulas_puladas = 0
 
         for celula_origem, destino in destinos.items():
@@ -526,18 +690,22 @@ def processar_regiao(
                 celulas_escritas_usou1 += 1
             elif idx_usou == 2:
                 celulas_escritas_usou2 += 1
+            elif idx_usou == 3:
+                celulas_escritas_usou3 += 1
 
         mudou_alguma_coisa = True
 
         # 4.7 Acumula info para o resumo, mas NÃO move arquivo ainda
         # (move só APÓS save bem-sucedido da planilha pai — em caso de falha,
         # arquivo continua em PENDENTES para próxima execução)
-        total_escritas = celulas_escritas_usou1 + celulas_escritas_usou2
+        total_escritas = celulas_escritas_usou1 + celulas_escritas_usou2 + celulas_escritas_usou3
         partes = []
         if celulas_escritas_usou1:
             partes.append(f"USOU1={celulas_escritas_usou1}")
         if celulas_escritas_usou2:
             partes.append(f"USOU2={celulas_escritas_usou2}")
+        if celulas_escritas_usou3:
+            partes.append(f"USOU3={celulas_escritas_usou3}")
         info_usou = ", ".join(partes) if partes else "0 escritas"
 
         print(f"     {aba_pai:<22} — {total_escritas} valores escritos ({info_usou})")
@@ -550,6 +718,7 @@ def processar_regiao(
             "celulas_escritas": total_escritas,
             "celulas_escritas_usou1": celulas_escritas_usou1,
             "celulas_escritas_usou2": celulas_escritas_usou2,
+            "celulas_escritas_usou3": celulas_escritas_usou3,
             "celulas_puladas_vazias": celulas_puladas,
         }
         a_mover_processados.append((arquivo, info_processada))
@@ -757,7 +926,13 @@ def main() -> None:
     print("=" * 60)
     print(f"  PROCESSO 2 — ANTILHAS — {hoje_fmt}{dry_tag}")
     print("=" * 60)
+    # Diagnóstico: mostra qual Python e openpyxl estão de fato em uso
+    print(f"   Python:    {sys.executable}")
+    print(f"   openpyxl:  {openpyxl.__version__}  ({Path(openpyxl.__file__).parent})")
     logger.info("Iniciando Processo 2%s", dry_tag)
+    logger.info("Python: %s  |  openpyxl: %s  (%s)",
+                sys.executable, openpyxl.__version__,
+                Path(openpyxl.__file__).parent)
 
     # Trava
     lock_path = criar_lock(script_dir)
